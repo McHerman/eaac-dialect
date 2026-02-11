@@ -28,6 +28,9 @@ namespace eaac {
 /// Creates a pass to collect alloc/dealloc operations and print liveness info.
 std::unique_ptr<Pass> createCollectAllocDeallocPass();
 
+/// Creates pass to statically allocate memory
+std::unique_ptr<Pass> createMemoryAllocPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//

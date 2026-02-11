@@ -38,8 +38,11 @@ test:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline test/input.mlir
 
 # Run with collect-alloc-dealloc pass
-test-alloc:
+test-collect:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-collect-alloc-dealloc test/input.mlir
+
+test-alloc:
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-memory-alloc test/input.mlir
 
 # Print available passes
 help-passes:

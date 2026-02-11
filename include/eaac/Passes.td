@@ -31,4 +31,27 @@ def CollectAllocDealloc : Pass<"eaac-collect-alloc-dealloc", "mlir::ModuleOp"> {
   ];
 }
 
+def MemoryAlloc : Pass<"eaac-memory-alloc", "mlir::ModuleOp"> {
+  let summary = "Basic static memory allocation pass";
+  let description = [{
+    This pass walks across all memref.alloc and memref.dealloc operations,
+    collects them in separate lists.
+
+    The pass then uses this information to create a minimalloc problem which
+    is then solved.
+
+    The pass:
+    1. Collects all memref.alloc operations
+    2. Collects all memref.dealloc operations
+    3. Computes operation numbering for liveness
+    4. Creates minimalloc problem
+    5. Solves said minimalloc problem
+  }];
+  let constructor = "mlir::eaac::createMemoryAllocPass()";
+
+  let dependentDialects = [
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 #endif // EAAC_PASSES

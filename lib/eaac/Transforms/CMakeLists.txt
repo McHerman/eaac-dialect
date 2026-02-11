@@ -1,5 +1,6 @@
 add_mlir_library(EAACTransforms
   CollectAllocDealloc.cpp
+  MemoryAlloc.cpp
 
   DEPENDS
   EAACPassIncGen
