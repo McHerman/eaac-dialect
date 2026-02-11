@@ -7,11 +7,19 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 #include "eaac/Dialect.h"
+#include "eaac/Passes.h"
 
 int main(int argc, char **argv) {
+  // Register MLIR core passes (like bufferization)
+  mlir::registerAllPasses();
+
+  // Register EAAC passes
+  mlir::eaac::registerEAACPasses();
+
   mlir::DialectRegistry registry;
   
   // Register all standard MLIR dialects
