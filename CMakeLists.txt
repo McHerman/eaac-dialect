@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.25.1)
 project(eaac-dialect LANGUAGES CXX C)
 
-set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
+set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard to conform to")
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 find_package(MLIR REQUIRED CONFIG)
@@ -19,6 +19,10 @@ include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
+
+# Add minimalloc for static memory allocation
+# EXCLUDE_FROM_ALL ensures only minimalloc_core is built (not tests/CLI)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../minimalloc minimalloc EXCLUDE_FROM_ALL)
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
@@ -38,9 +42,12 @@ set(LLVM_LINK_COMPONENTS
 add_llvm_executable(eaac-opt
   eaac-opt.cpp
   mlir/Dialect.cpp
+  mlir/CollectAllocDealloc.cpp
+  mlir/StaticMemoryAllocation.cpp
 
   DEPENDS
   EAACIncGen
+  EAACPassIncGen
 )
 
 target_link_libraries(eaac-opt
@@ -50,4 +57,11 @@ target_link_libraries(eaac-opt
     MLIRSupport
     MLIROptLib
     MLIRRegisterAllDialects
+    MLIRRegisterAllPasses
+    MLIRMemRefDialect
+    MLIRArithDialect
+    MLIRFuncDialect
+    MLIRPass
+    MLIRTransforms
+    minimalloc_core
 )
