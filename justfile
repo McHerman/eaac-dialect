@@ -2,8 +2,9 @@
 
 # Configuration
 llvm_build_dir := "/home/karlhk/dtu/Thesis/MLIR/llvm-project/build"
-build_dir := "build/bin"
+build_dir := "build"
 build_type := "RelWithDebInfo"
+eaac_opt := build_dir / "bin/eaac-opt"
 
 # Default recipe - show available commands
 default:
@@ -32,7 +33,14 @@ clean:
 # Rebuild from scratch
 rebuild: clean all
 
-# Run eaac-opt on a file
+# Run the test input file with bufferization
 test:
-    #{{build_dir}}/eaac-opt --one-shot-bufferize="bufferize-function-boundaries" --buffer-deallocation-pipeline --eaac-collect-alloc-dealloc test/input.mlir
-    {{build_dir}}/eaac-opt --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --buffer-deallocation-simplification test/input.mlir 
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline test/input.mlir
+
+# Run with collect-alloc-dealloc pass
+test-alloc:
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-collect-alloc-dealloc test/input.mlir
+
+# Print available passes
+help-passes:
+    {{eaac_opt}} --help | grep -A 1000 "Passes:"
