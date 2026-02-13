@@ -45,6 +45,12 @@ uint64_t getMemRefSizeInBytes(MemRefType type) {
   return numElements * ((elementBits + 7) / 8);
 }
 
+/// Stores mapping from AllocOp to its index in the minimalloc problem.
+struct BufferInfo {
+  memref::AllocOp allocOp;
+  size_t bufferIndex;
+};
+
 class MemoryAllocPass
     : public impl::MemoryAllocBase<MemoryAllocPass> {
 public:
@@ -55,6 +61,7 @@ public:
 
     // Create minimalloc problem
     minimalloc::Problem problem;
+    llvm::SmallVector<BufferInfo> bufferInfos;
 
     problem.capacity = 1000000000;
     int bufferIdx = 0;
@@ -108,6 +115,8 @@ public:
             .hint = std::nullopt
         });
 
+        // Store mapping from allocOp to buffer index
+        bufferInfos.push_back({allocOp, problem.buffers.size() - 1});
       });
     });
 
@@ -137,6 +146,16 @@ public:
         llvm::errs() << "  Offset:   " << offset << "\n";
         llvm::errs() << "  Range:    [" << offset << ", "
                      << (offset + buf.size) << ")\n\n";
+      }
+
+      // Annotate each allocOp with its computed offset and size
+      for (auto &info : bufferInfos) {
+        auto offset = solution.offsets[info.bufferIndex];
+        auto size = problem.buffers[info.bufferIndex].size;
+
+        OpBuilder builder(info.allocOp);
+        info.allocOp->setAttr("eaac.offset", builder.getI64IntegerAttr(offset));
+        info.allocOp->setAttr("eaac.size", builder.getI64IntegerAttr(size));
       }
     } else {
       llvm::errs() << "Solver failed: allocation not possible\n";
