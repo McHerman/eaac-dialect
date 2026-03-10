@@ -31,6 +31,9 @@ std::unique_ptr<Pass> createCollectAllocDeallocPass();
 /// Creates pass to statically allocate memory
 std::unique_ptr<Pass> createMemoryAllocPass();
 
+/// Creates pass to insert local SRAM staging for compute operations
+std::unique_ptr<Pass> createLocalStagingPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//
