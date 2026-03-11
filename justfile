@@ -46,7 +46,7 @@ test-alloc:
 
 
 test-local-staging:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-local-staging test/input.mlir
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --inline --canonicalize --eaac-local-staging test/input.mlir
 
 # Print available passes
 help-passes:
