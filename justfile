@@ -44,6 +44,10 @@ test-collect:
 test-alloc:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-memory-alloc test/input.mlir
 
+
+test-local-staging:
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-local-staging test/input.mlir
+
 # Print available passes
 help-passes:
     {{eaac_opt}} --help | grep -A 1000 "Passes:"

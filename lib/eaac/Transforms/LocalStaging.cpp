@@ -1,7 +1,7 @@
-//===- LocalStaging.cpp - Assign static offsets to memory elements -===//
+//===- LocalStaging.cpp - Insert local SRAM staging for compute ops -===//
 //
-// Pass to collect memref allocations and print their liveness intervals
-// using MLIR's built-in Liveness analysis.
+// Pass to insert memref.copy operations to stage data into local SRAM
+// before compute operations and copy results back afterward.
 //
 //===----------------------------------------------------------------------===//
 
@@ -9,47 +9,58 @@
 
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cstdint>
-
-#include "minimalloc.h"
-#include "solver.h"           
+#include <optional>
+#include <string>
 
 namespace mlir {
 namespace eaac {
 
-#define GEN_PASS_DEF_MEMORYALLOC
+#define GEN_PASS_DEF_LOCALSTAGING
 #include "eaac/Passes.h.inc"
 
 namespace {
 
-/// Computes the size in bytes for a memref type.
-uint64_t getMemRefSizeInBytes(MemRefType type) {
-  if (!type.hasStaticShape())
-    return 0;
+//===----------------------------------------------------------------------===//
+// Buffer allocation types (equivalent to minimalloc Python types)
+//===----------------------------------------------------------------------===//
 
-  int64_t numElements = 1;
-  for (int64_t dim : type.getShape())
-    numElements *= dim;
+/// Represents a time interval [lower, upper).
+struct Interval {
+  int64_t lower;
+  int64_t upper;
 
-  Type elementType = type.getElementType();
-  uint64_t elementBits = elementType.isIntOrFloat()
-      ? elementType.getIntOrFloatBitWidth()
-      : 32;
-
-  return numElements * ((elementBits + 7) / 8);
-}
-
-/// Stores mapping from AllocOp to its index in the minimalloc problem.
-struct BufferInfo {
-  memref::AllocOp allocOp;
-  size_t bufferIndex;
+  Interval() : lower(0), upper(0) {}
+  Interval(int64_t lower, int64_t upper) : lower(lower), upper(upper) {}
 };
+
+/// Represents a memory buffer with its lifetime and allocation info.
+struct Buffer {
+  std::string id;
+  Interval lifespan;
+  int64_t size;
+  int64_t alignment;
+  int64_t offset; // Assigned offset after allocation
+
+  Buffer() : size(0), alignment(1), offset(-1) {}
+  Buffer(std::string id, Interval lifespan, int64_t size, int64_t alignment = 1)
+      : id(std::move(id)), lifespan(lifespan), size(size), alignment(alignment),
+        offset(-1) {}
+};
+
+//===----------------------------------------------------------------------===//
+// Live interval and memory tier types
+//===----------------------------------------------------------------------===//
 
 /// Stores information about a single use of a memref.
 struct MemRefUse {
@@ -57,28 +68,147 @@ struct MemRefUse {
   int64_t time;
 };
 
-/// Stores lifetime and usage information for a memref allocation.
-struct MemRefLifetimeInfo {
+/// A live range with use positions (equivalent to Python LiveInterval).
+struct LiveInterval {
+  std::string id;
+  int64_t size;
+  int64_t start;
+  int64_t end;
+  llvm::SmallVector<int64_t> uses;
+  int64_t offset;
+  std::optional<int64_t> reloadFromTier;
+  std::optional<int64_t> reloadFromOffset;
+
+  // Optional reference to the original allocation op
   memref::AllocOp allocOp;
-  int64_t startTime;
-  int64_t endTime;
-  llvm::SmallVector<MemRefUse> uses;  // all uses of the memref
+
+  LiveInterval()
+      : size(0), start(0), end(0), offset(-1), reloadFromTier(std::nullopt),
+        reloadFromOffset(std::nullopt), allocOp(nullptr) {}
+
+  LiveInterval(std::string id, int64_t size, int64_t start, int64_t end,
+               llvm::SmallVector<int64_t> uses = {}, int64_t offset = -1)
+      : id(std::move(id)), size(size), start(start), end(end),
+        uses(std::move(uses)), offset(offset), reloadFromTier(std::nullopt),
+        reloadFromOffset(std::nullopt), allocOp(nullptr) {}
+
+  /// Comparison operator for sorting by start position.
+  bool operator<(const LiveInterval &other) const { return start < other.start; }
 };
 
-class MemoryAllocPass
-    : public impl::MemoryAllocBase<MemoryAllocPass> {
+/// Represents a memory tier with its capacity and state.
+class MemoryTier {
 public:
-  using MemoryAllocBase::MemoryAllocBase;
+  std::string name;
+  int64_t capacity;
+  int64_t level;
+
+  llvm::SmallVector<Buffer> buffers;
+  llvm::SmallVector<LiveInterval> active;
+  llvm::SmallVector<LiveInterval> handled;
+  llvm::SmallVector<LiveInterval> unhandled;
+
+  MemoryTier() : capacity(0), level(0) {}
+  MemoryTier(std::string name, int64_t capacity, int64_t level)
+      : name(std::move(name)), capacity(capacity), level(level) {}
+
+  /// Remove and return a buffer by its id. Returns nullptr if not found.
+  std::optional<Buffer> removeBuffer(llvm::StringRef bufferId) {
+    for (auto it = buffers.begin(); it != buffers.end(); ++it) {
+      if (it->id == bufferId) {
+        Buffer removed = std::move(*it);
+        buffers.erase(it);
+        return removed;
+      }
+    }
+    return std::nullopt;
+  }
+
+  /// Find a buffer by its id. Returns nullptr if not found.
+  Buffer *getBuffer(llvm::StringRef bufferId) {
+    for (auto &buf : buffers) {
+      if (buf.id == bufferId) {
+        return &buf;
+      }
+    }
+    return nullptr;
+  }
+
+  /// Remove and return an active interval by its id.
+  std::optional<LiveInterval> removeActive(llvm::StringRef intervalId) {
+    for (auto it = active.begin(); it != active.end(); ++it) {
+      if (it->id == intervalId) {
+        LiveInterval removed = std::move(*it);
+        active.erase(it);
+        return removed;
+      }
+    }
+    return std::nullopt;
+  }
+
+  /// Add an interval to the unhandled list, maintaining sorted order by start.
+  void addUnhandled(LiveInterval interval) {
+    auto insertPos = std::lower_bound(unhandled.begin(), unhandled.end(),
+                                       interval);
+    unhandled.insert(insertPos, std::move(interval));
+  }
+};
+
+/// A memory allocation problem instance.
+struct AllocationProblem {
+  int64_t numRegs;
+  llvm::SmallVector<LiveInterval> intervals;
+
+  AllocationProblem() : numRegs(0) {}
+  explicit AllocationProblem(int64_t numRegs) : numRegs(numRegs) {}
+
+  /// Add an interval with its liveness range and use positions.
+  AllocationProblem &add(std::string id, int64_t size, int64_t start,
+                         int64_t end, llvm::SmallVector<int64_t> uses = {},
+                         int64_t offset = -1) {
+    intervals.emplace_back(std::move(id), size, start, end, std::move(uses),
+                           offset);
+    return *this;
+  }
+
+  /// Return intervals sorted by start position.
+  llvm::SmallVector<LiveInterval> sortedIntervals() const {
+    llvm::SmallVector<LiveInterval> sorted = intervals;
+    std::sort(sorted.begin(), sorted.end());
+    return sorted;
+  }
+};
+
+/// Result of computing a spill operation.
+struct SpillResult {
+  std::optional<LiveInterval> reloadInterval;
+  std::optional<Buffer> spillBuffer;
+  std::optional<Buffer> prefixBuffer;
+  std::optional<LiveInterval> prefixInterval;
+
+  SpillResult() = default;
+  SpillResult(std::optional<LiveInterval> reloadInterval,
+              std::optional<Buffer> spillBuffer,
+              std::optional<Buffer> prefixBuffer,
+              std::optional<LiveInterval> prefixInterval)
+      : reloadInterval(std::move(reloadInterval)),
+        spillBuffer(std::move(spillBuffer)),
+        prefixBuffer(std::move(prefixBuffer)),
+        prefixInterval(std::move(prefixInterval)) {}
+};
+
+
+
+
+
+
+class LocalStagingPass
+    : public impl::LocalStagingBase<LocalStagingPass> {
+public:
+  using LocalStagingBase::LocalStagingBase;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-
-    // Create minimalloc problem
-    minimalloc::Problem problem;
-    llvm::SmallVector<BufferInfo> bufferInfos;
-
-    problem.capacity = 1000000000;
-    int bufferIdx = 0;
 
     module.walk([&](func::FuncOp funcOp) {
 
@@ -91,7 +221,7 @@ public:
       Liveness liveness(funcOp);
 
       // Step 3: Process each allocation
-      llvm::SmallVector<MemRefLifetimeInfo> lifetimeInfos;
+      llvm::SmallVector<LiveInterval> lifetimeInfos;
 
       funcOp.walk([&](memref::AllocOp allocOp) {
         Value memref = allocOp.getResult();
@@ -116,100 +246,70 @@ public:
         int64_t startTime = opTime[startOp];
         int64_t endTime = opTime[endOp];
 
-        // Collect all use times for this memref
-        llvm::SmallVector<int64_t> useTimes;
+        // Collect all uses of this memref
+        llvm::SmallVector<MemRefUse> memRefUses;
         for (Operation *user : memref.getUsers()) {
           if (opTime.count(user)) {
-            useTimes.push_back(opTime[user]);
+            memRefUses.push_back({user, opTime[user]});
           }
         }
-        // Sort use times chronologically
-        llvm::sort(useTimes);
+        // Sort uses chronologically by time
+        llvm::sort(memRefUses, [](const MemRefUse &a, const MemRefUse &b) {
+          return a.time < b.time;
+        });
 
-        MemRefType type = allocOp.getType();
-        uint64_t size = getMemRefSizeInBytes(type);
+        // Extract use times for the LiveInterval
+        llvm::SmallVector<int64_t> useTimes;
+        for (const auto &use : memRefUses) {
+          useTimes.push_back(use.time);
+        }
 
-        int64_t sizeInBytes = static_cast<int64_t>(size);
+        // Create a unique ID for this allocation
+        std::string id = std::to_string(startTime);
 
-        // Store lifetime info
-        lifetimeInfos.push_back({allocOp, startTime, endTime, useTimes});
+        // Compute buffer size (simplified - assumes 1D for now)
+        int64_t size = 1;
+        auto memrefType = llvm::cast<MemRefType>(memref.getType());
+        for (int64_t dim : memrefType.getShape()) {
+          if (dim != ShapedType::kDynamic)
+            size *= dim;
+        }
+
+        // Create and store the LiveInterval
+        LiveInterval interval(id, size, startTime, endTime, std::move(useTimes));
+        interval.allocOp = allocOp;
+        lifetimeInfos.push_back(std::move(interval));
 
         // Print lifetime and usage information
         llvm::errs() << "MemRef allocation at time " << startTime << ":\n";
-        llvm::errs() << "  Size: " << sizeInBytes << " bytes\n";
         llvm::errs() << "  Lifetime: [" << startTime << ", " << endTime << "]\n";
-        llvm::errs() << "  Uses at times: [";
-        for (size_t i = 0; i < useTimes.size(); ++i) {
-          if (i > 0) llvm::errs() << ", ";
-          llvm::errs() << useTimes[i];
+        llvm::errs() << "  Size: " << size << "\n";
+        llvm::errs() << "  Uses (" << memRefUses.size() << "):\n";
+        for (const auto &use : memRefUses) {
+          llvm::errs() << "    t=" << use.time << ": " 
+                       << use.op->getName().getStringRef() << "\n";
         }
-        llvm::errs() << "]\n\n";
-
-        /*
-
-        problem.buffers.push_back(minimalloc::Buffer{
-            .id = "buf" + std::to_string(bufferIdx++),
-            .lifespan = {startTime, endTime + 1},  // half-open interval
-            .size = sizeInBytes,
-            .alignment = 1,
-            .gaps = {},
-            .offset = std::nullopt,
-            .hint = std::nullopt
-        });
-
-        // Store mapping from allocOp to buffer index
-        bufferInfos.push_back({allocOp, problem.buffers.size() - 1});
-        */ 
+        llvm::errs() << "\n";
       });
     });
-    
-    /*
-    // Solve
-    minimalloc::Solver solver;
-    auto result = solver.Solve(problem);
 
-    if (result.ok()) {
-      minimalloc::Solution solution = *result;
-
-      llvm::errs() << "Buffers: " << problem.buffers.size() << "\n";
-      llvm::errs() << "Total memory required: " << solution.height << " bytes\n\n";
-
-      for (size_t i = 0; i < problem.buffers.size(); ++i) {
-        const auto &buf = problem.buffers[i];
-        minimalloc::Offset offset = solution.offsets[i];
-
-        llvm::errs() << "Buffer " << i << ":\n";
-        llvm::errs() << "  ID:       " << buf.id << "\n";
-        llvm::errs() << "  Size:     " << buf.size << " bytes\n";
-        llvm::errs() << "  Lifespan: [" << buf.lifespan.lower() << ", "
-                     << buf.lifespan.upper() << ")\n";
-        llvm::errs() << "  Offset:   " << offset << "\n";
-        llvm::errs() << "  Range:    [" << offset << ", "
-                     << (offset + buf.size) << ")\n\n";
-      }
-
-      // Annotate each allocOp with its computed offset and size
-      for (auto &info : bufferInfos) {
-        auto offset = solution.offsets[info.bufferIndex];
-        auto size = problem.buffers[info.bufferIndex].size;
-
-        OpBuilder builder(info.allocOp);
-        info.allocOp->setAttr("eaac.offset", builder.getI64IntegerAttr(offset));
-        info.allocOp->setAttr("eaac.size", builder.getI64IntegerAttr(size));
-      }
-    } else {
-      llvm::errs() << "Solver failed: allocation not possible\n";
-    }
-
-    llvm::errs() << "========================================\n";
-    */
+    // TODO: Implement local SRAM staging
+    // This pass should:
+    // 1. Walk through linalg ops
+    // 2. For each memref operand not in local SRAM (memory_space=3):
+    //    - Allocate a local buffer
+    //    - Insert memref.copy to stage data in
+    // 3. For output operands:
+    //    - Insert memref.copy to write results back
+    // 4. Rewrite compute op to use local buffers
+    // 5. Deallocate local buffers
   }
 };
 
 } // anonymous namespace
 
-std::unique_ptr<Pass> createMemoryAllocPass() {
-  return std::make_unique<MemoryAllocPass>();
+std::unique_ptr<Pass> createLocalStagingPass() {
+  return std::make_unique<LocalStagingPass>();
 }
 
 } // namespace eaac
