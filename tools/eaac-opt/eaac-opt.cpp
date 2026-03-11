@@ -7,6 +7,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
@@ -24,6 +25,9 @@ int main(int argc, char **argv) {
   
   // Register all standard MLIR dialects
   mlir::registerAllDialects(registry);
+  
+  // Register all dialect extensions (needed for inlining, etc.)
+  mlir::registerAllExtensions(registry);
   
   // Register our EAAC dialect
   registry.insert<mlir::eaac::EAACDialect>();

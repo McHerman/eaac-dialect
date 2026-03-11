@@ -20,6 +20,7 @@ target_link_libraries(eaac-opt
   MLIRSupport
   MLIROptLib
   MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
   MLIRRegisterAllPasses
   MLIRMemRefDialect
   MLIRArithDialect
