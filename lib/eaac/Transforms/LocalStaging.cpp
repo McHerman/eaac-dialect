@@ -308,6 +308,16 @@ void allocSuccess(LiveInterval &cur, MemoryTier &tier,
     for (auto &iv : tier.active) {
       if (iv.id == tier.buffers[i].id) {
         iv.offset = offset;
+        // Annotate only the newly allocated interval's memref
+        if (iv.id == cur.id) {
+          if (Operation *defOp = iv.memref.getDefiningOp()) {
+            OpBuilder builder(defOp);
+            defOp->setAttr("eaac.offset",
+                           builder.getI64IntegerAttr(offset));
+            defOp->setAttr("eaac.tier",
+                           builder.getI64IntegerAttr(tier.level));
+          }
+        }
         break;
       }
     }
@@ -743,13 +753,6 @@ public:
     }
 
     auto map = allocate(problem);
-
-    LLVM_DEBUG({
-      for (auto &index : map)
-        llvm::dbgs() << "MAP ID=" << index.getKey() << " offset="
-                     << index.getValue() << "\n";
-    });
-
 
   }
 };
