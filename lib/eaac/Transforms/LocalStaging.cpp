@@ -5,20 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "eaac/MemRefLivenessAnalysis.h"
 #include "eaac/Passes.h"
 
-#include "mlir/Analysis/Liveness.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -64,44 +60,8 @@ struct Buffer {
         offset(-1) {}
 };
 
-//===----------------------------------------------------------------------===//
-// Live interval and memory tier types
-//===----------------------------------------------------------------------===//
-
-/// Stores information about a single use of a memref.
-struct MemRefUse {
-  Operation *op;
-  int64_t time;
-};
-
-/// A live range with use positions (equivalent to Python LiveInterval).
-struct LiveInterval {
-  std::string id;
-  int64_t size;
-  int64_t start;
-  int64_t end;
-  llvm::SmallVector<int64_t> uses;
-  int64_t offset;
-  std::optional<int64_t> reloadFromTier;
-  std::optional<int64_t> reloadFromOffset;
-
-  // Reference to the memref SSA value this interval tracks
-  Value memref;
-
-  LiveInterval()
-      : size(0), start(0), end(0), offset(-1), reloadFromTier(std::nullopt),
-        reloadFromOffset(std::nullopt) {}
-
-  LiveInterval(std::string id, int64_t size, int64_t start, int64_t end,
-               llvm::SmallVector<int64_t> uses = {}, Value memref = Value(),
-               int64_t offset = -1)
-      : id(std::move(id)), size(size), start(start), end(end),
-        uses(std::move(uses)), offset(offset), reloadFromTier(std::nullopt),
-        reloadFromOffset(std::nullopt), memref(memref) {}
-
-  /// Comparison operator for sorting by start position.
-  bool operator<(const LiveInterval &other) const { return start < other.start; }
-};
+using eaac::LiveInterval;
+using eaac::MemRefUse;
 
 /// Represents a memory tier with its capacity and state.
 class MemoryTier {
@@ -773,93 +733,12 @@ public:
   using LocalStagingBase::LocalStagingBase;
 
   void runOnOperation() override {
-
-    // Lifetime container
-    llvm::SmallVector<LiveInterval> lifetimeInfos;
-
-    ModuleOp module = getOperation();
-
-    module.walk([&](func::FuncOp funcOp) {
-      // Step 1: Number all operations
-      llvm::DenseMap<Operation *, int64_t> opTime;
-      int64_t time = 0;
-      funcOp.walk([&](Operation *op) { opTime[op] = time++; });
-
-      // Step 2: Compute liveness using MLIR's analysis
-      Liveness liveness(funcOp);
-
-      funcOp.walk([&](memref::AllocOp allocOp) {
-        Value memref = allocOp.getResult();
-        Operation *startOp = allocOp;
-        Operation *endOp = allocOp;
-
-        // Find the last use across all blocks using Liveness
-        for (Block &block : funcOp.getBody()) {
-          const LivenessBlockInfo *blockInfo = liveness.getLiveness(&block);
-          if (!blockInfo)
-            continue;
-
-          if (Operation *end = blockInfo->getEndOperation(memref, startOp)) {
-            int64_t endTime = opTime[end];
-            int64_t currentEndTime = opTime[endOp];
-            if (endTime > currentEndTime)
-              endOp = end;
-          }
-        }
-
-        // Look up times for start and end operations
-        int64_t startTime = opTime[startOp];
-        int64_t endTime = opTime[endOp];
-
-        // Collect all uses of this memref
-        llvm::SmallVector<MemRefUse> memRefUses;
-        for (Operation *user : memref.getUsers()) {
-          if (opTime.count(user)) {
-            memRefUses.push_back({user, opTime[user]});
-          }
-        }
-        // Sort uses chronologically by time
-        llvm::sort(memRefUses, [](const MemRefUse &a, const MemRefUse &b) {
-          return a.time < b.time;
-        });
-
-        // Extract use times for the LiveInterval
-        llvm::SmallVector<int64_t> useTimes;
-        for (const auto &use : memRefUses) {
-          useTimes.push_back(use.time);
-        }
-
-        // Create a unique ID for this allocation
-        std::string id = std::to_string(startTime);
-
-        // Compute buffer size (simplified - assumes 1D for now)
-        int64_t size = 1;
-        auto memrefType = llvm::cast<MemRefType>(memref.getType());
-        for (int64_t dim : memrefType.getShape()) {
-          if (dim != ShapedType::kDynamic)
-            size *= dim;
-        }
-
-        // Create and store the LiveInterval
-        LiveInterval interval(id, size, startTime, endTime, std::move(useTimes), memref);
-        lifetimeInfos.push_back(std::move(interval));
-
-        LLVM_DEBUG({
-          llvm::dbgs() << "MemRef allocation at time " << startTime << ": "
-                       << memref << "\n  Lifetime: [" << startTime << ", "
-                       << endTime << "] Size: " << size << " Uses:";
-          for (const auto &use : memRefUses)
-            llvm::dbgs() << " " << use.time << "("
-                         << use.op->getName().getStringRef() << ")";
-          llvm::dbgs() << "\n";
-        });
-      });
-    });
-
+    // Get lifetime analysis from the AnalysisManager
+    auto &livenessAnalysis = getAnalysis<MemRefLivenessAnalysis>();
+    const auto &lifetimeInfos = livenessAnalysis.getIntervals();
 
     AllocationProblem problem;
-
-    for (auto &interval : lifetimeInfos) {
+    for (const auto &interval : lifetimeInfos) {
       problem.add(interval);
     }
 
@@ -870,9 +749,6 @@ public:
         llvm::dbgs() << "MAP ID=" << index.getKey() << " offset="
                      << index.getValue() << "\n";
     });
-
-
-
 
 
   }
