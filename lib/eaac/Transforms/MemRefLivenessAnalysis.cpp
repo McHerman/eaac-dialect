@@ -76,12 +76,16 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
       std::string id = std::to_string(startTime);
 
       // Compute buffer size (number of elements)
-      int64_t size = 1;
       auto memrefType = llvm::cast<MemRefType>(memref.getType());
+      mlir::Type elementType = memrefType.getElementType();
+      int64_t bytes = elementType.getIntOrFloatBitWidth() / 8;
+      int64_t size = 1;
       for (int64_t dim : memrefType.getShape()) {
         if (dim != ShapedType::kDynamic)
           size *= dim;
       }
+
+      size *= bytes;
 
       // Create and store the LiveInterval
       LiveInterval interval(id, size, startTime, endTime, std::move(useTimes),
