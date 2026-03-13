@@ -20,6 +20,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "minimalloc.h"
@@ -29,6 +30,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+
+#define DEBUG_TYPE "local-staging"
 
 namespace mlir {
 namespace eaac {
@@ -82,18 +85,19 @@ struct LiveInterval {
   std::optional<int64_t> reloadFromTier;
   std::optional<int64_t> reloadFromOffset;
 
-  // Optional reference to the original allocation op
-  memref::AllocOp allocOp;
+  // Reference to the memref SSA value this interval tracks
+  Value memref;
 
   LiveInterval()
       : size(0), start(0), end(0), offset(-1), reloadFromTier(std::nullopt),
-        reloadFromOffset(std::nullopt), allocOp(nullptr) {}
+        reloadFromOffset(std::nullopt) {}
 
   LiveInterval(std::string id, int64_t size, int64_t start, int64_t end,
-               llvm::SmallVector<int64_t> uses = {}, int64_t offset = -1)
+               llvm::SmallVector<int64_t> uses = {}, Value memref = Value(),
+               int64_t offset = -1)
       : id(std::move(id)), size(size), start(start), end(end),
         uses(std::move(uses)), offset(offset), reloadFromTier(std::nullopt),
-        reloadFromOffset(std::nullopt), allocOp(nullptr) {}
+        reloadFromOffset(std::nullopt), memref(memref) {}
 
   /// Comparison operator for sorting by start position.
   bool operator<(const LiveInterval &other) const { return start < other.start; }
@@ -118,16 +122,6 @@ public:
   /// Remove and return a buffer by its id. Returns nullptr if not found.
   std::optional<Buffer> removeBuffer(llvm::StringRef bufferId) {
 
-    /*
-    for (auto it = buffers.begin(); it != buffers.end(); ++it) {
-      if (it->id == bufferId) {
-        Buffer removed = std::move(*it);
-        buffers.erase(it);
-        return removed;
-      }
-    }
-    */
-
     for (auto [i, buf] : llvm::enumerate(buffers)) {
       if (buf.id == bufferId) {
         Buffer removed = std::move(buf);
@@ -151,15 +145,6 @@ public:
 
   /// Remove and return an active interval by its id.
   std::optional<LiveInterval> removeActive(llvm::StringRef intervalId) {
-    /*
-    for (auto it = active.begin(); it != active.end(); ++it) {
-      if (it->id == intervalId) {
-        LiveInterval removed = std::move(*it);
-        active.erase(it);
-        return removed;
-      }
-    }
-    */
 
     for (auto [i, interval] : llvm::enumerate(active)) {
       if (interval.id == intervalId) {
@@ -208,16 +193,19 @@ struct SpillResult {
   std::optional<Buffer> spillBuffer;
   std::optional<Buffer> prefixBuffer;
   std::optional<LiveInterval> prefixInterval;
+  Value spilledMemref; // The victim's original memref Value
 
   SpillResult() = default;
   SpillResult(std::optional<LiveInterval> reloadInterval,
               std::optional<Buffer> spillBuffer,
               std::optional<Buffer> prefixBuffer,
-              std::optional<LiveInterval> prefixInterval)
+              std::optional<LiveInterval> prefixInterval,
+              Value spilledMemref = Value())
       : reloadInterval(std::move(reloadInterval)),
         spillBuffer(std::move(spillBuffer)),
         prefixBuffer(std::move(prefixBuffer)),
-        prefixInterval(std::move(prefixInterval)) {}
+        prefixInterval(std::move(prefixInterval)),
+        spilledMemref(spilledMemref) {}
 };
 
 //===----------------------------------------------------------------------===//
@@ -253,17 +241,16 @@ getIntervalsFromSubset(const std::vector<long> &subset,
 /// Try to allocate a buffer in a tier. Returns solution if successful.
 std::optional<minimalloc::Solution>
 tryAllocate(MemoryTier &tier, const Buffer &buffer, minimalloc::Solver &solver) {
-  llvm::errs() << "[tryAllocate] " << tier.name << ": trying buffer id="
-               << buffer.id << " size=" << buffer.size << " lifespan=["
-               << buffer.lifespan.lower << ", " << buffer.lifespan.upper
-               << ") capacity=" << tier.capacity << "\n";
-  llvm::errs() << "[tryAllocate] " << tier.name << ": existing buffers ("
-               << tier.buffers.size() << "): ";
-  for (const auto &buf : tier.buffers) {
-    llvm::errs() << "{id=" << buf.id << " [" << buf.lifespan.lower << ","
-                 << buf.lifespan.upper << ") sz=" << buf.size << "} ";
-  }
-  llvm::errs() << "\n";
+  LLVM_DEBUG({
+    llvm::dbgs() << "[tryAllocate] " << tier.name << ": trying id=" << buffer.id
+                 << " size=" << buffer.size << " [" << buffer.lifespan.lower
+                 << ", " << buffer.lifespan.upper << ") capacity="
+                 << tier.capacity << " existing=(" << tier.buffers.size()
+                 << "): ";
+    for (const auto &buf : tier.buffers)
+      llvm::dbgs() << buf.id << " ";
+    llvm::dbgs() << "\n";
+  });
 
   // Add buffer to tier
   tier.buffers.push_back(buffer);
@@ -288,26 +275,25 @@ tryAllocate(MemoryTier &tier, const Buffer &buffer, minimalloc::Solver &solver) 
       result->offsets.size() != tier.buffers.size()) {
     // Failed - remove the buffer we just added
     tier.buffers.pop_back();
-    llvm::errs() << "[tryAllocate] " << tier.name << ": FAILED for id="
-                 << buffer.id;
-    if (!result.ok()) {
-      llvm::errs() << " (solver error: " << result.status().message() << ")";
-    } else {
-      llvm::errs() << " (offset count mismatch: got "
-                   << result->offsets.size() << " expected "
-                   << tier.buffers.size() + 1 << ")";
-    }
-    llvm::errs() << "\n";
+    LLVM_DEBUG({
+      llvm::dbgs() << "[tryAllocate] " << tier.name << ": FAILED for id="
+                   << buffer.id;
+      if (!result.ok())
+        llvm::dbgs() << " (" << result.status().message() << ")";
+      llvm::dbgs() << "\n";
+    });
     return std::nullopt;
   }
 
-  llvm::errs() << "[tryAllocate] " << tier.name << ": SUCCESS for id="
-               << buffer.id << " offsets=[";
-  for (size_t i = 0; i < result->offsets.size(); ++i) {
-    if (i > 0) llvm::errs() << ", ";
-    llvm::errs() << tier.buffers[i].id << ":" << result->offsets[i];
-  }
-  llvm::errs() << "]\n";
+  LLVM_DEBUG({
+    llvm::dbgs() << "[tryAllocate] " << tier.name << ": SUCCESS id="
+                 << buffer.id << " offsets=[";
+    for (size_t i = 0; i < result->offsets.size(); ++i) {
+      if (i > 0) llvm::dbgs() << ", ";
+      llvm::dbgs() << tier.buffers[i].id << ":" << result->offsets[i];
+    }
+    llvm::dbgs() << "]\n";
+  });
 
   return *result;
 }
@@ -324,15 +310,16 @@ void expireTierIntervals(const LiveInterval &cur, MemoryTier &tier,
     }
   }
 
-  if (!expiredIndices.empty()) {
-    llvm::errs() << "[expire] " << tier.name << ": expiring "
-                 << expiredIndices.size() << " intervals at cur.start="
-                 << cur.start << ": ";
-    for (size_t idx : expiredIndices) {
-      llvm::errs() << tier.active[idx].id << "(end=" << tier.active[idx].end << ") ";
+  LLVM_DEBUG({
+    if (!expiredIndices.empty()) {
+      llvm::dbgs() << "[expire] " << tier.name << ": expiring "
+                   << expiredIndices.size() << " at cur.start=" << cur.start
+                   << ":";
+      for (size_t idx : expiredIndices)
+        llvm::dbgs() << " " << tier.active[idx].id;
+      llvm::dbgs() << "\n";
     }
-    llvm::errs() << "\n";
-  }
+  });
 
   // Remove in reverse order to maintain valid indices
   for (auto it = expiredIndices.rbegin(); it != expiredIndices.rend(); ++it) {
@@ -346,9 +333,9 @@ void expireTierIntervals(const LiveInterval &cur, MemoryTier &tier,
 void allocSuccess(LiveInterval &cur, MemoryTier &tier,
                   const minimalloc::Solution &solution,
                   llvm::StringMap<int64_t> &memMap) {
-  llvm::errs() << "[allocSuccess] " << tier.name << ": allocated id=" << cur.id
-               << " [" << cur.start << ", " << cur.end << ") size=" << cur.size
-               << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[allocSuccess] " << tier.name << ": id=" << cur.id
+                          << " [" << cur.start << ", " << cur.end
+                          << ") size=" << cur.size << "\n");
 
   tier.active.push_back(cur);
 
@@ -368,27 +355,20 @@ void allocSuccess(LiveInterval &cur, MemoryTier &tier,
     memMap[tier.buffers[i].id] = offset;
   }
 
-  llvm::errs() << "[allocSuccess] " << tier.name << ": memMap after: {";
-  for (const auto &kv : memMap) {
-    llvm::errs() << kv.first() << ":" << kv.second << " ";
-  }
-  llvm::errs() << "}\n";
-  llvm::errs() << "[allocSuccess] " << tier.name << ": active intervals ("
-               << tier.active.size() << "): ";
-  for (const auto &iv : tier.active) {
-    llvm::errs() << "{id=" << iv.id << " [" << iv.start << "," << iv.end
-                 << ") off=" << iv.offset << "} ";
-  }
-  llvm::errs() << "\n";
+  LLVM_DEBUG({
+    llvm::dbgs() << "[allocSuccess] " << tier.name << ": active=";
+    for (const auto &iv : tier.active)
+      llvm::dbgs() << "{" << iv.id << " off=" << iv.offset << "} ";
+    llvm::dbgs() << "\n";
+  });
 }
 
 /// Select which interval to spill from a tier.
 std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
                                               MemoryTier &tier,
                                               minimalloc::Solver &solver) {
-  llvm::errs() << "[selectSpillVictim] " << tier.name
-               << ": finding victim for cur.id=" << cur.id
-               << " cur.start=" << cur.start << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[selectSpillVictim] " << tier.name
+                          << ": for cur.id=" << cur.id << "\n");
 
   // Create problem to find IIS
   minimalloc::Problem problem;
@@ -406,53 +386,21 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
 
   auto subset = solver.ComputeIrreducibleInfeasibleSubset(problem);
   if (!subset.ok() || subset->empty()) {
-    llvm::errs() << "[selectSpillVictim] " << tier.name
-                 << ": IIS computation failed or empty";
-    if (!subset.ok()) {
-      llvm::errs() << " (error: " << subset.status().message() << ")";
-    }
-    llvm::errs() << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "[selectSpillVictim] " << tier.name
+                            << ": IIS failed or empty\n");
     return std::nullopt;
   }
-
-  llvm::errs() << "[selectSpillVictim] " << tier.name << ": IIS indices=[";
-  for (size_t i = 0; i < subset->size(); ++i) {
-    if (i > 0) llvm::errs() << ", ";
-    llvm::errs() << (*subset)[i];
-  }
-  llvm::errs() << "]\n";
 
   auto conflictingIntervals =
       getIntervalsFromSubset(*subset, tier.buffers, tier.active);
   if (conflictingIntervals.empty()) {
-    llvm::errs() << "[selectSpillVictim] " << tier.name
-                 << ": no conflicting intervals found in active list\n";
-    llvm::errs() << "[selectSpillVictim] " << tier.name
-                 << ": active list (" << tier.active.size() << "): ";
-    for (const auto &iv : tier.active) {
-      llvm::errs() << iv.id << " ";
-    }
-    llvm::errs() << "\n";
-    llvm::errs() << "[selectSpillVictim] " << tier.name
-                 << ": buffer list (" << tier.buffers.size() << "): ";
-    for (const auto &buf : tier.buffers) {
-      llvm::errs() << buf.id << " ";
-    }
-    llvm::errs() << "\n";
+    LLVM_DEBUG({
+      llvm::dbgs() << "[selectSpillVictim] " << tier.name
+                   << ": no conflicts in active (active=" << tier.active.size()
+                   << " buffers=" << tier.buffers.size() << ")\n";
+    });
     return std::nullopt;
   }
-
-  llvm::errs() << "[selectSpillVictim] " << tier.name
-               << ": conflicting intervals: ";
-  for (auto *iv : conflictingIntervals) {
-    llvm::errs() << "{id=" << iv->id << " uses=[";
-    for (size_t i = 0; i < iv->uses.size(); ++i) {
-      if (i > 0) llvm::errs() << ",";
-      llvm::errs() << iv->uses[i];
-    }
-    llvm::errs() << "] end=" << iv->end << "} ";
-  }
-  llvm::errs() << "\n";
 
   // Weight by distance to next use (prefer spilling intervals with distant next use)
   llvm::StringMap<int64_t> weight;
@@ -470,8 +418,8 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
   }
 
   if (weight.empty()) {
-    llvm::errs() << "[selectSpillVictim] " << tier.name
-                 << ": no positive weights found, cannot select victim\n";
+    LLVM_DEBUG(llvm::dbgs() << "[selectSpillVictim] " << tier.name
+                            << ": no positive weights\n");
     return std::nullopt;
   }
 
@@ -485,12 +433,9 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
     }
   }
 
-  llvm::errs() << "[selectSpillVictim] " << tier.name << ": weights={";
-  for (const auto &kv : weight) {
-    llvm::errs() << kv.first() << ":" << kv.second << " ";
-  }
-  llvm::errs() << "} -> selected victim=" << maxId << " (weight=" << maxWeight
-               << ")\n";
+  LLVM_DEBUG(llvm::dbgs() << "[selectSpillVictim] " << tier.name
+                          << ": victim=" << maxId << " weight=" << maxWeight
+                          << "\n");
 
   return maxId;
 }
@@ -498,15 +443,14 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
 /// Compute the spill for a given interval.
 SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
                          const std::string &spillId) {
-  llvm::errs() << "[computeSpill] " << tier.name << ": spilling id=" << spillId
-               << " at cur.start=" << cur.start << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[computeSpill] " << tier.name << ": id="
+                          << spillId << " at cur.start=" << cur.start << "\n");
 
   // Remove the interval from active
   auto spilledIntervalOpt = tier.removeActive(spillId);
   if (!spilledIntervalOpt) {
-    llvm::errs() << "[computeSpill] " << tier.name
-                 << ": FAILED - could not find id=" << spillId
-                 << " in active list\n";
+    LLVM_DEBUG(llvm::dbgs() << "[computeSpill] FAILED: " << spillId
+                            << " not in active\n");
     return SpillResult();
   }
   LiveInterval spilledInterval = std::move(*spilledIntervalOpt);
@@ -514,24 +458,14 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
   // Remove the buffer
   auto removedBufferOpt = tier.removeBuffer(spillId);
   if (!removedBufferOpt) {
-    llvm::errs() << "[computeSpill] " << tier.name
-                 << ": FAILED - could not find buffer id=" << spillId << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "[computeSpill] FAILED: buffer " << spillId
+                            << " not found\n");
     return SpillResult();
   }
 
   int64_t originalStart = spilledInterval.start;
   int64_t originalEnd = spilledInterval.end;
   int64_t spillStart = cur.start;
-
-  llvm::errs() << "[computeSpill] " << tier.name
-               << ": spilled interval [" << originalStart << ", "
-               << originalEnd << ") size=" << spilledInterval.size
-               << " uses=[";
-  for (size_t i = 0; i < spilledInterval.uses.size(); ++i) {
-    if (i > 0) llvm::errs() << ",";
-    llvm::errs() << spilledInterval.uses[i];
-  }
-  llvm::errs() << "]\n";
 
   // Find next use after spillStart
   std::optional<int64_t> nextUse;
@@ -545,9 +479,10 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
     nextUse = originalEnd - 1;
   }
 
-  llvm::errs() << "[computeSpill] " << tier.name
-               << ": spillStart=" << spillStart << " nextUse=" << *nextUse
-               << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[computeSpill] " << tier.name << ": ["
+                          << originalStart << ", " << originalEnd
+                          << ") spillStart=" << spillStart
+                          << " nextUse=" << *nextUse << "\n");
 
   // Prefix: portion BEFORE spill point (stays in this tier)
   std::optional<Buffer> prefixBuffer;
@@ -562,11 +497,9 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
         prefixUses.push_back(u);
     }
     prefixInterval = LiveInterval(spillId, spilledInterval.size, originalStart,
-                                  spillStart, std::move(prefixUses));
-    llvm::errs() << "[computeSpill] " << tier.name << ": prefix=["
-                 << originalStart << ", " << spillStart << ")\n";
-  } else {
-    llvm::errs() << "[computeSpill] " << tier.name << ": no prefix\n";
+                                  spillStart, std::move(prefixUses), spilledInterval.memref);
+    LLVM_DEBUG(llvm::dbgs() << "[computeSpill] prefix=[" << originalStart
+                            << ", " << spillStart << ")\n");
   }
 
   // Spill: goes to next tier
@@ -574,10 +507,8 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
   if (spillStart < *nextUse) {
     spillBuffer =
         Buffer(spillId, Interval(spillStart, *nextUse), spilledInterval.size, 1);
-    llvm::errs() << "[computeSpill] " << tier.name << ": spill=["
-                 << spillStart << ", " << *nextUse << ")\n";
-  } else {
-    llvm::errs() << "[computeSpill] " << tier.name << ": no spill buffer\n";
+    LLVM_DEBUG(llvm::dbgs() << "[computeSpill] spill=[" << spillStart << ", "
+                            << *nextUse << ")\n");
   }
 
   // Reload: comes back to this tier
@@ -590,14 +521,13 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
     }
     reloadInterval = LiveInterval(spillId, spilledInterval.size, *nextUse,
                                   originalEnd, std::move(reloadUses));
-    llvm::errs() << "[computeSpill] " << tier.name << ": reload=["
-                 << *nextUse << ", " << originalEnd << ")\n";
-  } else {
-    llvm::errs() << "[computeSpill] " << tier.name << ": no reload\n";
+    LLVM_DEBUG(llvm::dbgs() << "[computeSpill] reload=[" << *nextUse << ", "
+                            << originalEnd << ")\n");
   }
 
   return SpillResult(std::move(reloadInterval), std::move(spillBuffer),
-                     std::move(prefixBuffer), std::move(prefixInterval));
+                     std::move(prefixBuffer), std::move(prefixInterval),
+                     spilledInterval.memref);
 }
 
 // Forward declarations
@@ -617,12 +547,12 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   MemoryTier &tier = tiers[tierIdx];
   size_t nextTierIdx = tierIdx + 1;
 
-  llvm::errs() << "[handleSpill] " << tier.name << ": spilling for cur.id="
-               << cur.id << " [" << cur.start << ", " << cur.end << ")\n";
+  LLVM_DEBUG(llvm::dbgs() << "[handleSpill] " << tier.name << ": cur.id="
+                          << cur.id << " [" << cur.start << ", " << cur.end
+                          << ")\n");
 
   if (nextTierIdx >= tiers.size()) {
-    llvm::errs() << "[handleSpill] " << tier.name
-                 << ": FAILED - no next tier available\n";
+    LLVM_DEBUG(llvm::dbgs() << "[handleSpill] no next tier\n");
     return false;
   }
 
@@ -631,76 +561,85 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   // Select which interval to spill
   auto spillIdOpt = selectSpillVictim(cur, tier, solver);
   if (!spillIdOpt) {
-    llvm::errs() << "[handleSpill] " << tier.name
-                 << ": FAILED - no spill victim found\n";
+    LLVM_DEBUG(llvm::dbgs() << "[handleSpill] no victim found\n");
     return false;
   }
 
-  llvm::errs() << "[handleSpill] " << tier.name << ": spilling victim="
-               << *spillIdOpt << " to " << nextTier.name << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[handleSpill] victim=" << *spillIdOpt << " -> "
+                          << nextTier.name << "\n");
 
   // Compute the spill
   SpillResult result = computeSpill(cur, tier, *spillIdOpt);
 
   // Handle prefix portion (stays in current tier)
   if (result.prefixBuffer && result.prefixInterval) {
-    llvm::errs() << "[handleSpill] " << tier.name
-                 << ": allocating prefix for " << result.prefixBuffer->id
-                 << " [" << result.prefixBuffer->lifespan.lower << ", "
-                 << result.prefixBuffer->lifespan.upper << ")\n";
     auto prefixSolution = tryAllocate(tier, *result.prefixBuffer, solver);
     if (prefixSolution) {
       tier.active.push_back(*result.prefixInterval);
-      llvm::errs() << "[handleSpill] " << tier.name
-                   << ": prefix allocated successfully\n";
-    } else {
-      llvm::errs() << "[handleSpill] " << tier.name
-                   << ": prefix allocation FAILED\n";
     }
   }
 
-  // Handle spill portion (goes to next tier)
-  if (result.spillBuffer) {
-    LiveInterval spillInterval(result.spillBuffer->id, result.spillBuffer->size,
-                               result.spillBuffer->lifespan.lower,
-                               result.spillBuffer->lifespan.upper);
-    llvm::errs() << "[handleSpill] " << tier.name
-                 << ": adding spill to " << nextTier.name
-                 << " id=" << spillInterval.id << " ["
-                 << spillInterval.start << ", " << spillInterval.end << ")\n";
-    nextTier.addUnhandled(std::move(spillInterval));
+  // Create IR operations for spill and reload buffers
+  bool hasSpill = result.spillBuffer.has_value();
+  bool hasReload = result.reloadInterval.has_value() &&
+                   result.reloadInterval->start < result.reloadInterval->end;
 
-    // Process the next tier to allocate the spill
-    llvm::errs() << "[handleSpill] " << tier.name
-                 << ": recursing into " << nextTier.name << "\n";
-    processTier(nextTierIdx, tiers, solver, memMap);
-    llvm::errs() << "[handleSpill] " << tier.name
-                 << ": returned from " << nextTier.name << "\n";
+  Value spillMemref;
+  Value reloadMemref;
+
+  if (hasSpill || hasReload) {
+    Value originalMemref = result.spilledMemref;
+    auto type = llvm::cast<MemRefType>(originalMemref.getType());
+    Location loc = originalMemref.getLoc();
+
+    OpBuilder builder(originalMemref.getDefiningOp());
+    builder.setInsertionPointAfter(originalMemref.getDefiningOp());
+
+    // Spill: alloc + copy original -> spill buffer
+    if (hasSpill) {
+      spillMemref = memref::AllocOp::create(builder, loc, type);
+      memref::CopyOp::create(builder, loc, originalMemref, spillMemref);
+    }
+
+    // Reload: alloc + copy spill -> reload buffer
+    if (hasReload) {
+      if (spillMemref) {
+        reloadMemref = memref::AllocOp::create(builder, loc, type);
+        memref::CopyOp::create(builder, loc, spillMemref, reloadMemref);
+        // Spill buffer served its purpose, free it
+        memref::DeallocOp::create(builder, loc, spillMemref);
+      } else {
+        // No spill window — reuse original memref
+        reloadMemref = originalMemref;
+      }
+    }
   }
 
-  // Handle reload portion (comes back to this tier)
-  if (result.reloadInterval && result.reloadInterval->start < result.reloadInterval->end) {
+  // Add spill interval to next tier
+  if (hasSpill) {
+    LiveInterval spillInterval(result.spillBuffer->id, result.spillBuffer->size,
+                               result.spillBuffer->lifespan.lower,
+                               result.spillBuffer->lifespan.upper,
+                               /*uses=*/{}, spillMemref);
+    nextTier.addUnhandled(std::move(spillInterval));
+    processTier(nextTierIdx, tiers, solver, memMap);
+  }
+
+  // Add reload interval back to current tier
+  if (hasReload) {
     Buffer *dstBuffer = nextTier.getBuffer(*spillIdOpt);
     if (dstBuffer) {
       result.reloadInterval->reloadFromTier = nextTierIdx;
       result.reloadInterval->reloadFromOffset = dstBuffer->offset;
-      llvm::errs() << "[handleSpill] " << tier.name
-                   << ": reload from " << nextTier.name
-                   << " offset=" << dstBuffer->offset << "\n";
     } else {
-      llvm::errs() << "[handleSpill] " << tier.name
-                   << ": WARNING - could not find spill buffer in "
-                   << nextTier.name << " for id=" << *spillIdOpt << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "[handleSpill] WARNING: spill buffer for "
+                              << *spillIdOpt << " not found in "
+                              << nextTier.name << "\n");
     }
-    llvm::errs() << "[handleSpill] " << tier.name
-                 << ": adding reload to unhandled id="
-                 << result.reloadInterval->id << " ["
-                 << result.reloadInterval->start << ", "
-                 << result.reloadInterval->end << ")\n";
+    result.reloadInterval->memref = reloadMemref;
     tier.addUnhandled(std::move(*result.reloadInterval));
   }
 
-  llvm::errs() << "[handleSpill] " << tier.name << ": spill complete\n";
   return true;
 }
 
@@ -709,17 +648,13 @@ bool allocateAtTier(LiveInterval &cur, size_t tierIdx,
                     llvm::SmallVector<MemoryTier, 4> &tiers,
                     minimalloc::Solver &solver,
                     llvm::StringMap<int64_t> &memMap) {
-  if (tierIdx >= tiers.size()) {
-    llvm::errs() << "[allocateAtTier] tierIdx=" << tierIdx
-                 << " out of range (num tiers=" << tiers.size() << ")\n";
+  if (tierIdx >= tiers.size())
     return false;
-  }
 
   MemoryTier &tier = tiers[tierIdx];
-
-  llvm::errs() << "[allocateAtTier] " << tier.name << ": attempting id="
-               << cur.id << " [" << cur.start << ", " << cur.end
-               << ") size=" << cur.size << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name << ": id="
+                          << cur.id << " [" << cur.start << ", " << cur.end
+                          << ") size=" << cur.size << "\n");
 
   Buffer buffer(cur.id, Interval(cur.start, cur.end), cur.size, 1);
 
@@ -729,27 +664,23 @@ bool allocateAtTier(LiveInterval &cur, size_t tierIdx,
     return true;
   }
 
-  llvm::errs() << "[allocateAtTier] " << tier.name
-               << ": first attempt failed, trying spill\n";
-
   // Allocation failed - spill and retry
-  if (!handleSpill(cur, tierIdx, tiers, solver, memMap)) {
-    llvm::errs() << "[allocateAtTier] " << tier.name
-                 << ": spill FAILED for id=" << cur.id << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
+                          << ": trying spill\n");
+  if (!handleSpill(cur, tierIdx, tiers, solver, memMap))
     return false;
-  }
 
-  llvm::errs() << "[allocateAtTier] " << tier.name
-               << ": retrying allocation after spill for id=" << cur.id << "\n";
-
+  LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
+                          << ": retrying after spill\n");
   solution = tryAllocate(tier, buffer, solver);
   if (solution) {
     allocSuccess(cur, tier, *solution, memMap);
     return true;
   }
 
-  llvm::errs() << "[allocateAtTier] " << tier.name
-               << ": FAILED even after spill for id=" << cur.id << "\n";
+  LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
+                          << ": FAILED even after spill for id=" << cur.id
+                          << "\n");
   return false;
 }
 
@@ -759,35 +690,28 @@ void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
                  llvm::StringMap<int64_t> &memMap) {
   MemoryTier &tier = tiers[tierIdx];
 
-  llvm::errs() << "\n=== [processTier] " << tier.name
-               << " (level=" << tier.level << " capacity=" << tier.capacity
-               << ") unhandled=" << tier.unhandled.size() << " ===\n";
-  for (const auto &iv : tier.unhandled) {
-    llvm::errs() << "  unhandled: id=" << iv.id << " [" << iv.start << ", "
-                 << iv.end << ") size=" << iv.size << " uses=[";
-    for (size_t i = 0; i < iv.uses.size(); ++i) {
-      if (i > 0) llvm::errs() << ",";
-      llvm::errs() << iv.uses[i];
-    }
-    llvm::errs() << "]\n";
-  }
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n=== processTier " << tier.name << " (capacity="
+                 << tier.capacity << " unhandled=" << tier.unhandled.size()
+                 << ") ===\n";
+    for (const auto &iv : tier.unhandled)
+      llvm::dbgs() << "  " << iv.id << " [" << iv.start << ", " << iv.end
+                   << ") size=" << iv.size << "\n";
+  });
 
   while (!tier.unhandled.empty()) {
     LiveInterval cur = std::move(tier.unhandled.front());
     tier.unhandled.erase(tier.unhandled.begin());
 
-    llvm::errs() << "\n--- [processTier] " << tier.name << ": processing id="
-                 << cur.id << " [" << cur.start << ", " << cur.end
-                 << ") size=" << cur.size << " ---\n";
+    LLVM_DEBUG(llvm::dbgs() << "\n--- " << tier.name << ": id=" << cur.id
+                            << " [" << cur.start << ", " << cur.end << ") ---\n");
 
     // Expire intervals that have ended
     expireTierIntervals(cur, tier, memMap);
 
     // Skip invalid intervals
     if (cur.start >= cur.end) {
-      llvm::errs() << "[processTier] " << tier.name << ": SKIPPING id="
-                   << cur.id << " (start=" << cur.start
-                   << " >= end=" << cur.end << ")\n";
+      LLVM_DEBUG(llvm::dbgs() << "  skipping (start >= end)\n");
       continue;
     }
 
@@ -795,41 +719,31 @@ void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
     allocateAtTier(cur, tierIdx, tiers, solver, memMap);
   }
 
-  llvm::errs() << "=== [processTier] " << tier.name << ": done ===\n\n";
+  LLVM_DEBUG(llvm::dbgs() << "=== " << tier.name << " done ===\n\n");
 }
 
 /// Run linear scan memory allocation with recursive spilling across N tiers.
 llvm::StringMap<int64_t>
 allocate(const AllocationProblem &problem,
-         llvm::ArrayRef<int64_t> tierCapacities = {12288, 16384, 131072}) {
+         llvm::ArrayRef<int64_t> tierCapacities = {98304, 147456, 16777216}) {
 
-  llvm::errs() << "\n╔══════════════════════════════════════════╗\n"
-               << "║  ALLOCATION START                        ║\n"
-               << "╚══════════════════════════════════════════╝\n";
-  llvm::errs() << "Intervals (" << problem.intervals.size() << "):\n";
-  for (const auto &iv : problem.intervals) {
-    llvm::errs() << "  id=" << iv.id << " size=" << iv.size << " ["
-                 << iv.start << ", " << iv.end << ") uses=[";
-    for (size_t i = 0; i < iv.uses.size(); ++i) {
-      if (i > 0) llvm::errs() << ",";
-      llvm::errs() << iv.uses[i];
-    }
-    llvm::errs() << "]\n";
-  }
-  llvm::errs() << "Tier capacities: [";
-  for (size_t i = 0; i < tierCapacities.size(); ++i) {
-    if (i > 0) llvm::errs() << ", ";
-    llvm::errs() << tierCapacities[i];
-  }
-  llvm::errs() << "]\n\n";
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n=== ALLOCATION START ===\nIntervals ("
+                 << problem.intervals.size() << "):\n";
+    for (const auto &iv : problem.intervals)
+      llvm::dbgs() << "  id=" << iv.id << " size=" << iv.size << " ["
+                   << iv.start << ", " << iv.end << ")\n";
+    llvm::dbgs() << "Tiers: ";
+    for (auto cap : tierCapacities)
+      llvm::dbgs() << cap << " ";
+    llvm::dbgs() << "\n";
+  });
 
   // Create memory tiers (tier 0 = fastest/smallest)
   llvm::SmallVector<MemoryTier, 4> tiers;
   for (auto [i, cap] : llvm::enumerate(tierCapacities)) {
     std::string name = "Tier " + std::to_string(tierCapacities.size() - i);
     tiers.emplace_back(std::move(name), cap, static_cast<int64_t>(i));
-    llvm::errs() << "Created " << tiers.back().name << " (level=" << i
-                 << " capacity=" << cap << ")\n";
   }
 
   minimalloc::Solver solver;
@@ -841,14 +755,12 @@ allocate(const AllocationProblem &problem,
   // Process the top tier (recursively processes lower tiers as needed)
   processTier(0, tiers, solver, memMap);
 
-  llvm::errs() << "\n╔══════════════════════════════════════════╗\n"
-               << "║  ALLOCATION COMPLETE                     ║\n"
-               << "╚══════════════════════════════════════════╝\n";
-  llvm::errs() << "Final memMap (" << memMap.size() << " entries):\n";
-  for (const auto &kv : memMap) {
-    llvm::errs() << "  id=" << kv.first() << " -> offset=" << kv.second << "\n";
-  }
-  llvm::errs() << "\n";
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n=== ALLOCATION COMPLETE ===\nFinal memMap ("
+                 << memMap.size() << "):\n";
+    for (const auto &kv : memMap)
+      llvm::dbgs() << "  " << kv.first() << " -> " << kv.second << "\n";
+  });
 
   return memMap;
 }
@@ -929,21 +841,18 @@ public:
         }
 
         // Create and store the LiveInterval
-        LiveInterval interval(id, size, startTime, endTime, std::move(useTimes));
-        interval.allocOp = allocOp;
+        LiveInterval interval(id, size, startTime, endTime, std::move(useTimes), memref);
         lifetimeInfos.push_back(std::move(interval));
 
-        // Print lifetime and usage information
-        llvm::errs() << "MemRef allocation at time " << startTime << ":\n";
-        llvm::errs() << "  SSA value: " << memref << "\n";
-        llvm::errs() << "  Lifetime: [" << startTime << ", " << endTime << "]\n";
-        llvm::errs() << "  Size: " << size << "\n";
-        llvm::errs() << "  Uses (" << memRefUses.size() << "):\n";
-        for (const auto &use : memRefUses) {
-          llvm::errs() << "    t=" << use.time << ": " 
-                       << use.op->getName().getStringRef() << "\n";
-        }
-        llvm::errs() << "\n";
+        LLVM_DEBUG({
+          llvm::dbgs() << "MemRef allocation at time " << startTime << ": "
+                       << memref << "\n  Lifetime: [" << startTime << ", "
+                       << endTime << "] Size: " << size << " Uses:";
+          for (const auto &use : memRefUses)
+            llvm::dbgs() << " " << use.time << "("
+                         << use.op->getName().getStringRef() << ")";
+          llvm::dbgs() << "\n";
+        });
       });
     });
 
@@ -956,23 +865,16 @@ public:
 
     auto map = allocate(problem);
 
-    for (auto &index : map) {
-      llvm::StringRef key = index.getKey();
-      int value = index.getValue();
-      llvm::errs() << "MAP ID" << key << "MAP INT" << value  << "\n"; 
-    }
+    LLVM_DEBUG({
+      for (auto &index : map)
+        llvm::dbgs() << "MAP ID=" << index.getKey() << " offset="
+                     << index.getValue() << "\n";
+    });
 
 
-    // TODO: Implement local SRAM staging
-    // This pass should:
-    // 1. Walk through linalg ops
-    // 2. For each memref operand not in local SRAM (memory_space=3):
-    //    - Allocate a local buffer
-    //    - Insert memref.copy to stage data in
-    // 3. For output operands:
-    //    - Insert memref.copy to write results back
-    // 4. Rewrite compute op to use local buffers
-    // 5. Deallocate local buffers
+
+
+
   }
 };
 
