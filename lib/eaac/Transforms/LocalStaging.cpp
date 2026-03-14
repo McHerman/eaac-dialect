@@ -29,6 +29,13 @@
 
 #define DEBUG_TYPE "local-staging"
 
+// Debug helper callable from lldb: expr dumpIR(cur.memref)
+LLVM_ATTRIBUTE_USED static void dumpIR(mlir::Value v) {
+  if (auto *op = v.getDefiningOp())
+    if (auto module = op->getParentOfType<mlir::ModuleOp>())
+      module.dump();
+}
+
 namespace mlir {
 namespace eaac {
 
@@ -307,8 +314,8 @@ void allocSuccess(LiveInterval &cur, MemoryTier &tier,
         iv.offset = offset;
         // Annotate only the newly allocated interval's memref
         if (iv.id == cur.id) {
-          // TODO, move this logic to a function instead
-          if (Operation *defOp = iv.memref.getDefiningOp()) {
+          if (Operation *defOp = iv.memref ? iv.memref.getDefiningOp()
+                                            : nullptr) {
             OpBuilder builder(defOp);
             defOp->setAttr("eaac.offset",
                            builder.getI64IntegerAttr(offset));
@@ -557,6 +564,7 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
 
   // Spill: alloc + copy original -> spill buffer
   Value spillMemref = memref::AllocOp::create(builder, loc, type);
+  memref::CopyOp::create(builder, loc, originalMemref, spillMemref);
 
   // Reload: alloc + copy spill -> reload buffer
   // BUG This is not correct, that should be placed at next use
