@@ -51,14 +51,16 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         }
       }
 
-      // Look up times for start and end operations
+      // Look up times for start and end operations.
+      // Use half-open intervals: end is one past the last use.
       int64_t startTime = opTime[startOp];
-      int64_t endTime = opTime[endOp];
+      int64_t endTime = opTime[endOp] + 1;
 
-      // Collect all uses of this memref
+      // Collect all uses of this memref (excluding deallocs, which only
+      // define the lifetime boundary but shouldn't drive spill decisions)
       llvm::SmallVector<MemRefUse> memRefUses;
       for (Operation *user : memref.getUsers()) {
-        if (opTime.count(user)) {
+        if (opTime.count(user) && !isa<memref::DeallocOp>(user)) {
           memRefUses.push_back({user, opTime[user]});
         }
       }
