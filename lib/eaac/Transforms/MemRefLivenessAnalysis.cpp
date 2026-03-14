@@ -9,6 +9,7 @@
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -72,8 +73,13 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         useTimes.push_back(use.time);
       }
 
-      // Create a unique ID for this allocation
-      std::string id = std::to_string(startTime);
+      // Create a unique ID using the SSA value name (e.g. "%alloc")
+      std::string id;
+      {
+        AsmState state(funcOp);
+        llvm::raw_string_ostream os(id);
+        memref.printAsOperand(os, state);
+      }
 
       // Compute buffer size (number of elements)
       auto memrefType = llvm::cast<MemRefType>(memref.getType());
