@@ -149,17 +149,15 @@ struct AllocationProblem {
 
 /// Result of computing a spill operation.
 struct SpillResult {
+  Buffer spillBuffer;
+  Value spilledMemref;
   std::optional<LiveInterval> reloadInterval;
-  std::optional<Buffer> spillBuffer;
-  Value spilledMemref; // The victim's original memref Value
 
-  SpillResult() = default;
-  SpillResult(std::optional<LiveInterval> reloadInterval,
-              std::optional<Buffer> spillBuffer,
-              Value spilledMemref = Value())
-      : reloadInterval(std::move(reloadInterval)),
-        spillBuffer(std::move(spillBuffer)),
-        spilledMemref(spilledMemref) {}
+  SpillResult(Buffer spillBuffer, Value spilledMemref,
+              std::optional<LiveInterval> reloadInterval = std::nullopt)
+      : spillBuffer(std::move(spillBuffer)),
+        spilledMemref(spilledMemref),
+        reloadInterval(std::move(reloadInterval)) {}
 };
 
 //===----------------------------------------------------------------------===//
@@ -414,8 +412,9 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
 /// Compute the spill for a given interval.
 /// Truncates the victim's active interval and buffer in-place to end at
 /// spillStart, and returns spill/reload intervals for the remaining portion.
-SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
-                         const std::string &spillId) {
+std::optional<SpillResult> computeSpill(const LiveInterval &cur,
+                                        MemoryTier &tier,
+                                        const std::string &spillId) {
   LLVM_DEBUG(llvm::dbgs() << "[computeSpill] " << tier.name << ": id="
                           << spillId << " at cur.start=" << cur.start << "\n");
 
@@ -430,14 +429,14 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
   if (!activeInterval) {
     LLVM_DEBUG(llvm::dbgs() << "[computeSpill] FAILED: " << spillId
                             << " not in active\n");
-    return SpillResult();
+    return std::nullopt;
   }
 
   Buffer *buffer = tier.getBuffer(spillId);
   if (!buffer) {
     LLVM_DEBUG(llvm::dbgs() << "[computeSpill] FAILED: buffer " << spillId
                             << " not found\n");
-    return SpillResult();
+    return std::nullopt;
   }
 
   int64_t originalEnd = activeInterval->end;
@@ -474,16 +473,13 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
                           << activeInterval->start << ", " << spillStart
                           << ")\n");
 
-  // Spill: goes to next tier
-  std::optional<Buffer> spillBuffer;
-  if (spillStart < *nextUse) {
-    spillBuffer =
-        Buffer(spillId, Interval(spillStart, *nextUse), activeInterval->size, 1);
-    LLVM_DEBUG(llvm::dbgs() << "[computeSpill] spill=[" << spillStart << ", "
-                            << *nextUse << ")\n");
-  }
+  // Spill buffer always covers [spillStart, nextUse)
+  Buffer spillBuffer(spillId, Interval(spillStart, *nextUse),
+                     activeInterval->size, 1);
+  LLVM_DEBUG(llvm::dbgs() << "[computeSpill] spill=[" << spillStart << ", "
+                          << *nextUse << ")\n");
 
-  // Reload: comes back to this tier
+  // Reload: comes back to this tier (only if there's lifetime remaining)
   std::optional<LiveInterval> reloadInterval;
   if (*nextUse < originalEnd) {
     llvm::SmallVector<int64_t> reloadUses;
@@ -497,8 +493,8 @@ SpillResult computeSpill(const LiveInterval &cur, MemoryTier &tier,
                             << originalEnd << ")\n");
   }
 
-  return SpillResult(std::move(reloadInterval), std::move(spillBuffer),
-                     originalMemref);
+  return SpillResult(std::move(spillBuffer), originalMemref,
+                     std::move(reloadInterval));
 }
 
 // Forward declarations
@@ -540,66 +536,44 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
                           << nextTier.name << "\n");
 
   // Compute the spill (truncates victim in-place, returns spill/reload)
-  SpillResult result = computeSpill(cur, tier, *spillIdOpt);
+  auto resultOpt = computeSpill(cur, tier, *spillIdOpt);
+  if (!resultOpt) {
+    LLVM_DEBUG(llvm::dbgs() << "[handleSpill] computeSpill failed\n");
+    return false;
+  }
+  SpillResult &result = *resultOpt;
+
+  bool hasReload = result.reloadInterval.has_value();
 
   // Create IR operations for spill and reload buffers
-  bool hasSpill = result.spillBuffer.has_value();
-  bool hasReload = result.reloadInterval.has_value() &&
-                   result.reloadInterval->start < result.reloadInterval->end;
+  Value originalMemref = result.spilledMemref;
+  auto type = llvm::cast<MemRefType>(originalMemref.getType());
+  Location loc = originalMemref.getLoc();
 
-  Value spillMemref;
+  // TODO, make this a function call
+  // BUG, this should be before the CUR opt, not after the original.
+  OpBuilder builder(cur.memref.getDefiningOp());
+  builder.setInsertionPoint(cur.memref.getDefiningOp());
+
+  // Spill: alloc + copy original -> spill buffer
+  Value spillMemref = memref::AllocOp::create(builder, loc, type);
+
+  // Reload: alloc + copy spill -> reload buffer
+  // BUG This is not correct, that should be placed at next use
   Value reloadMemref;
-
-  //TODO, conditionals should prob not be here
-
-  if (hasSpill || hasReload) {
-    Value originalMemref = result.spilledMemref;
-    auto type = llvm::cast<MemRefType>(originalMemref.getType());
-    Location loc = originalMemref.getLoc();
-
-    // TODO, make this a function call 
-    // BUG, this should be before the CUR opt, not after the original.
-    //OpBuilder builder(originalMemref.getDefiningOp());
-    //builder.setInsertionPointAfter(originalMemref.getDefiningOp());
-    
-    OpBuilder builder(cur.memref.getDefiningOp());
-    builder.setInsertionPoint(cur.memref.getDefiningOp());
-
-    // Spill: alloc + copy original -> spill buffer
-    if (hasSpill) {
-      spillMemref = memref::AllocOp::create(builder, loc, type);
-      //memref::CopyOp::create(builder, loc, originalMemref, spillMemref);
-    }
-
-    OpBuilder builder2(cur.memref.getDefiningOp());
-    builder2.setInsertionPointAfter(cur.memref.getDefiningOp());
-
-    // Reload: alloc + copy spill -> reload buffer
-    // BUG This is not correct, that should be placed at next use 
-    if (hasReload) {
-      // TODO, completely unessecary check.
-      if (spillMemref) {
-        reloadMemref = memref::AllocOp::create(builder, loc, type);
-        memref::CopyOp::create(builder, loc, spillMemref, reloadMemref);
-        // Spill buffer served its purpose, free it
-        memref::DeallocOp::create(builder, loc, spillMemref);
-      } else {
-        // No spill window — reuse original memref
-        reloadMemref = originalMemref;
-      }
-    }
+  if (hasReload) {
+    reloadMemref = memref::AllocOp::create(builder, loc, type);
+    memref::CopyOp::create(builder, loc, spillMemref, reloadMemref);
+    memref::DeallocOp::create(builder, loc, spillMemref);
   }
 
   // Add spill interval to next tier
-  // TODO, also completely unessecary check
-  if (hasSpill) {
-    LiveInterval spillInterval(result.spillBuffer->id, result.spillBuffer->size,
-                               result.spillBuffer->lifespan.lower,
-                               result.spillBuffer->lifespan.upper,
-                               /*uses=*/{}, spillMemref);
-    nextTier.addUnhandled(std::move(spillInterval));
-    processTier(nextTierIdx, tiers, solver, memMap);
-  }
+  LiveInterval spillInterval(result.spillBuffer.id, result.spillBuffer.size,
+                             result.spillBuffer.lifespan.lower,
+                             result.spillBuffer.lifespan.upper,
+                             /*uses=*/{}, spillMemref);
+  nextTier.addUnhandled(std::move(spillInterval));
+  processTier(nextTierIdx, tiers, solver, memMap);
 
   // Add reload interval back to current tier
   if (hasReload) {
