@@ -573,6 +573,11 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
     reloadMemref = memref::AllocOp::create(builder, loc, type);
     memref::CopyOp::create(builder, loc, spillMemref, reloadMemref);
     memref::DeallocOp::create(builder, loc, spillMemref);
+
+    // Rewrite uses of original memref to use the reload memref
+    for (const auto &use : result.reloadInterval->uses) {
+      use.op->replaceUsesOfWith(originalMemref, reloadMemref);
+    }
   }
 
   // Add spill interval to next tier
