@@ -69,12 +69,6 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         return a.time < b.time;
       });
 
-      // Extract use times for the LiveInterval
-      llvm::SmallVector<int64_t> useTimes;
-      for (const auto &use : memRefUses) {
-        useTimes.push_back(use.time);
-      }
-
       // Create a unique ID using the SSA value name (e.g. "%alloc")
       std::string id;
       {
@@ -95,11 +89,6 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
 
       size *= bytes;
 
-      // Create and store the LiveInterval
-      LiveInterval interval(id, size, startTime, endTime, std::move(useTimes),
-                            memref);
-      intervals.push_back(std::move(interval));
-
       LLVM_DEBUG({
         llvm::dbgs() << "MemRef allocation at time " << startTime << ": "
                      << memref << "\n  Lifetime: [" << startTime << ", "
@@ -109,6 +98,11 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
                        << use.op->getName().getStringRef() << ")";
         llvm::dbgs() << "\n";
       });
+
+      // Create and store the LiveInterval
+      LiveInterval interval(id, size, startTime, endTime, std::move(memRefUses),
+                            memref);
+      intervals.push_back(std::move(interval));
     });
   });
 }

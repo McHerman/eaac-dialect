@@ -381,11 +381,11 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
   // Weight by distance to next use (prefer spilling intervals with distant next use)
   llvm::StringMap<int64_t> weight;
   for (auto *iv : conflictingIntervals) {
-    llvm::SmallVector<int64_t> usesCopy = iv->uses;
-    usesCopy.push_back(iv->end);
+    llvm::SmallVector<MemRefUse> usesCopy = iv->uses;
+    usesCopy.push_back({nullptr, iv->end});
 
-    for (int64_t use : usesCopy) {
-      int64_t diff = use - cur.start;
+    for (const auto &use : usesCopy) {
+      int64_t diff = use.time - cur.start;
       if (diff > 0) {
         weight[iv->id] = diff;
         break;
@@ -451,13 +451,13 @@ std::optional<SpillResult> computeSpill(const LiveInterval &cur,
   Value originalMemref = activeInterval->memref;
 
   // Save original uses before truncation (needed for spill/reload construction)
-  llvm::SmallVector<int64_t> originalUses = activeInterval->uses;
+  llvm::SmallVector<MemRefUse> originalUses = activeInterval->uses;
 
   // Find next use after spillStart
   std::optional<int64_t> nextUse;
-  for (int64_t u : originalUses) {
-    if (u > spillStart) {
-      nextUse = u;
+  for (const auto &u : originalUses) {
+    if (u.time > spillStart) {
+      nextUse = u.time;
       break;
     }
   }
@@ -473,7 +473,7 @@ std::optional<SpillResult> computeSpill(const LiveInterval &cur,
   // Truncate the victim in-place to keep only the prefix portion
   activeInterval->end = spillStart;
   llvm::erase_if(activeInterval->uses,
-                 [spillStart](int64_t u) { return u >= spillStart; });
+                 [spillStart](const MemRefUse &u) { return u.time >= spillStart; });
   buffer->lifespan.upper = spillStart;
 
   LLVM_DEBUG(llvm::dbgs() << "[computeSpill] truncated to ["
@@ -489,9 +489,9 @@ std::optional<SpillResult> computeSpill(const LiveInterval &cur,
   // Reload: comes back to this tier (only if there's lifetime remaining)
   std::optional<LiveInterval> reloadInterval;
   if (*nextUse < originalEnd) {
-    llvm::SmallVector<int64_t> reloadUses;
-    for (int64_t u : originalUses) {
-      if (u >= *nextUse)
+    llvm::SmallVector<MemRefUse> reloadUses;
+    for (const auto &u : originalUses) {
+      if (u.time >= *nextUse)
         reloadUses.push_back(u);
     }
     reloadInterval = LiveInterval(spillId, activeInterval->size, *nextUse,
@@ -558,7 +558,6 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   Location loc = originalMemref.getLoc();
 
   // TODO, make this a function call
-  // BUG, this should be before the CUR opt, not after the original.
   OpBuilder builder(cur.memref.getDefiningOp());
   builder.setInsertionPoint(cur.memref.getDefiningOp());
 
@@ -566,10 +565,11 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   Value spillMemref = memref::AllocOp::create(builder, loc, type);
   memref::CopyOp::create(builder, loc, originalMemref, spillMemref);
 
-  // Reload: alloc + copy spill -> reload buffer
-  // BUG This is not correct, that should be placed at next use
+  // Reload: alloc + copy spill -> reload buffer (placed at first use of reload)
   Value reloadMemref;
-  if (hasReload) {
+  if (hasReload && !result.reloadInterval->uses.empty()) {
+    Operation *reloadPoint = result.reloadInterval->uses.front().op;
+    builder.setInsertionPoint(reloadPoint);
     reloadMemref = memref::AllocOp::create(builder, loc, type);
     memref::CopyOp::create(builder, loc, spillMemref, reloadMemref);
     memref::DeallocOp::create(builder, loc, spillMemref);

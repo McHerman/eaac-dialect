@@ -31,7 +31,7 @@ struct LiveInterval {
   int64_t size;
   int64_t start;
   int64_t end;
-  llvm::SmallVector<int64_t> uses;
+  llvm::SmallVector<MemRefUse> uses;
   int64_t offset;
   std::optional<int64_t> reloadFromTier;
   std::optional<int64_t> reloadFromOffset;
@@ -39,12 +39,13 @@ struct LiveInterval {
   /// Reference to the memref SSA value this interval tracks.
   Value memref;
 
+
   LiveInterval()
       : size(0), start(0), end(0), offset(-1), reloadFromTier(std::nullopt),
         reloadFromOffset(std::nullopt) {}
 
   LiveInterval(std::string id, int64_t size, int64_t start, int64_t end,
-               llvm::SmallVector<int64_t> uses = {}, Value memref = Value(),
+               llvm::SmallVector<MemRefUse> uses = {}, Value memref = Value(),
                int64_t offset = -1)
       : id(std::move(id)), size(size), start(start), end(end),
         uses(std::move(uses)), offset(offset), reloadFromTier(std::nullopt),
