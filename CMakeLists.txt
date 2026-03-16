@@ -48,3 +48,10 @@ add_definitions(${LLVM_DEFINITIONS})
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
+
+# Test infrastructure
+set(EAAC_OPT "${CMAKE_BINARY_DIR}/bin/eaac-opt")
+set(LLVM_TOOLS_DIR "${LLVM_TOOLS_BINARY_DIR}")
+set(EAAC_TEST_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test")
+set(EAAC_TEST_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/test")
+add_subdirectory(test)

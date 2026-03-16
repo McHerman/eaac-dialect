@@ -3,8 +3,10 @@
 # Configuration
 llvm_build_dir := "/home/karlhk/dtu/Thesis/MLIR/llvm-project/build"
 build_dir := "build"
+debug_build_dir := "build-debug"
 build_type := "RelWithDebInfo"
 eaac_opt := build_dir / "bin/eaac-opt"
+eaac_opt_debug := debug_build_dir / "bin/eaac-opt"
 
 # Default recipe - show available commands
 default:
@@ -33,20 +35,29 @@ clean:
 # Rebuild from scratch
 rebuild: clean all
 
-# Run the test input file with bufferization
-test:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline test/input.mlir
-
-# Run with collect-alloc-dealloc pass
-test-collect:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-collect-alloc-dealloc test/input.mlir
-
-test-alloc:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --eaac-memory-alloc test/input.mlir
-
-
 test-local-staging:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --buffer-deallocation-pipeline --inline --canonicalize --eaac-local-staging test/input.mlir
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --view-op-graph test/input_8_tiny.mlir
+
+# Configure and build with -O0 for debugging (separate build dir)
+build-debug:
+    mkdir -p {{debug_build_dir}}
+    cmake -G Ninja -S . -B {{debug_build_dir}} \
+        -DMLIR_DIR="{{llvm_build_dir}}/lib/cmake/mlir" \
+        -DLLVM_DIR="{{llvm_build_dir}}/lib/cmake/llvm" \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DLLVM_ENABLE_LLD=ON
+    cmake --build {{debug_build_dir}}
+
+# Debug with lldb (uses -O0 build so variables aren't optimized out)
+test-debug:
+    lldb -s debug.lldb -- {{eaac_opt_debug}} \
+        --one-shot-bufferize="bufferize-function-boundaries" \
+        --buffer-results-to-out-params --inline --canonicalize \
+        --eaac-local-staging test/input_8_tiny.mlir
+
+# Run lit/FileCheck regression tests
+check: build
+    {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test -v
 
 # Print available passes
 help-passes:

@@ -1,0 +1,12 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+config.eaac_opt = "@EAAC_OPT@"
+config.llvm_tools_dir = "@LLVM_TOOLS_DIR@"
+config.eaac_test_source_dir = "@EAAC_TEST_SOURCE_DIR@"
+config.eaac_test_build_dir = "@EAAC_TEST_BUILD_DIR@"
+
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
+
+# Let the main config do the real work.
+lit_config.load_config(config, "@EAAC_TEST_SOURCE_DIR@/lit.cfg.py")
