@@ -38,6 +38,10 @@ rebuild: clean all
 test-local-staging:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --view-op-graph test/input_8_tiny.mlir
 
+
+test-DMA:
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --eaac-lower-copy-to-dma test/input_8_tiny.mlir
+
 # Configure and build with -O0 for debugging (separate build dir)
 build-debug:
     mkdir -p {{debug_build_dir}}
@@ -56,7 +60,7 @@ test-debug:
         --eaac-local-staging test/input_8_tiny.mlir
 
 # Run lit/FileCheck regression tests
-check: build
+test: build
     {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test -v
 
 # Print available passes

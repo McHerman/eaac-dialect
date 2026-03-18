@@ -83,4 +83,26 @@ def LocalStaging : Pass<"eaac-local-staging", "mlir::ModuleOp"> {
   ];
 }
 
+def LowerCopyToDma : Pass<"eaac-lower-copy-to-dma", "mlir::ModuleOp"> {
+  let summary = "Lower memref.copy to async DMA start/wait pairs";
+  let description = [{
+    This pass replaces every `memref.copy` operation with an
+    `eaac.dma_start` / `eaac.dma_wait` pair, producing 1:1 blocking
+    semantics. Future passes can hoist `dma_wait` to overlap compute
+    and data movement.
+
+    The pass:
+    1. Walks all memref.copy operations
+    2. Replaces each with eaac.dma_start(%src, %dst) -> %token
+    3. Inserts eaac.dma_wait(%token) immediately after
+    4. Erases the original memref.copy
+  }];
+  let constructor = "mlir::eaac::createLowerCopyToDmaPass()";
+
+  let dependentDialects = [
+    "mlir::memref::MemRefDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 #endif // EAAC_PASSES

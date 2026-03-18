@@ -34,6 +34,9 @@ std::unique_ptr<Pass> createMemoryAllocPass();
 /// Creates pass to insert local SRAM staging for compute operations
 std::unique_ptr<Pass> createLocalStagingPass();
 
+/// Creates pass to lower memref.copy to eaac.dma_start/dma_wait pairs
+std::unique_ptr<Pass> createLowerCopyToDmaPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//

@@ -3,6 +3,7 @@ add_mlir_library(EAACTransforms
   MemoryAlloc.cpp
   MemRefLivenessAnalysis.cpp
   LocalStaging.cpp
+  LowerCopyToDma.cpp
 
   DEPENDS
   EAACPassIncGen
