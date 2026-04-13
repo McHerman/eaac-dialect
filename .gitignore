@@ -10,3 +10,5 @@ build-debug/
 *.a
 *.so
 *.dylib
+.direnv/
+.envrc
