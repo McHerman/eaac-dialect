@@ -1,6 +1,6 @@
 //===- LowerCopyToDma.cpp - Lower memref.copy to DMA start/wait pairs -===//
 //
-// Pass to replace memref.copy operations with eaac.dma_start/dma_wait pairs.
+// Pass to replace memref.copy operations with eaac.dma_start ops.
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,10 +42,8 @@ public:
       Value src = copyOp.getSource();
       Value dst = copyOp.getTarget();
 
-      // Replace memref.copy with dma_start + dma_wait.
-      auto dmaStart = DmaStartOp::create(
-          builder, loc, builder.getIndexType(), src, dst);
-      DmaWaitOp::create(builder, loc, dmaStart.getToken());
+      // Replace memref.copy with dma_start (no semaphores initially).
+      DmaStartOp::create(builder, loc, src, dst, ValueRange{});
 
       copyOp.erase();
     }
