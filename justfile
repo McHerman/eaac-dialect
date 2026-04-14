@@ -42,8 +42,8 @@ test-local-staging:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging test/input_8_tiny.mlir
 
 
-test-DMA:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies test/input_8_tiny.mlir
+test-full:
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency test/input_8_tiny.mlir
 
 # Configure and build with -O0 for debugging (separate build dir)
 build-debug:
@@ -54,13 +54,6 @@ build-debug:
         -DCMAKE_BUILD_TYPE=Debug \
         -DLLVM_ENABLE_LLD=ON
     cmake --build {{debug_build_dir}}
-
-# Debug with lldb (uses -O0 build so variables aren't optimized out)
-test-debug:
-    lldb -s debug.lldb -- {{eaac_opt_debug}} \
-        --one-shot-bufferize="bufferize-function-boundaries" \
-        --buffer-results-to-out-params --inline --canonicalize \
-        --eaac-local-staging test/input_8_tiny.mlir
 
 # Run lit/FileCheck regression tests
 test: build
