@@ -105,4 +105,54 @@ def LowerCopyToDma : Pass<"eaac-lower-copy-to-dma", "mlir::ModuleOp"> {
   ];
 }
 
+def EncodeDependencies : Pass<"eaac-encode-dependencies", "mlir::ModuleOp"> {
+  let summary = "Wrap DMA and compute ops in async.execute regions";
+  let description = [{
+    Wraps every eaac.dma_start and linalg op in an async.execute region.
+    Each wrapped op produces an async.token. Dependency tokens are not
+    threaded in this pass — a later pass analyzes data dependencies and
+    connects the tokens.
+  }];
+  let constructor = "mlir::eaac::createEncodeDependenciesPass()";
+
+  let dependentDialects = [
+    "mlir::async::AsyncDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
+def FindAsyncDependency : Pass<"eaac-find-async-dependency", "mlir::ModuleOp"> {
+  let summary = "Find and wire async.token dependencies between async.execute regions";
+  let description = [{
+    For each async.execute region, inspects the memref operands of its inner
+    ops and finds producers (other async.execute regions that write to those
+    memrefs) via SSA use-def chains. Adds the producer tokens as dependencies
+    on the consumer async.execute.
+  }];
+  let constructor = "mlir::eaac::createFindAsyncDependencyPass()";
+
+  let dependentDialects = [
+    "mlir::async::AsyncDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
+def LowerAsyncToSemaphore : Pass<"eaac-lower-async-to-semaphore", "mlir::ModuleOp"> {
+  let summary = "Lower async.execute regions and tokens to hardware semaphores";
+  let description = [{
+    Converts async.token dependencies between async.execute regions into
+    hardware semaphore operations. Each token dependency becomes a sem_alloc,
+    producer ops get semaphore args for signaling, consumer ops get semaphore
+    args for waiting. DMA ops keep their semaphore args directly, linalg ops
+    are wrapped in eaac.compute. Async.execute regions are stripped.
+  }];
+  let constructor = "mlir::eaac::createLowerAsyncToSemaphorePass()";
+
+  let dependentDialects = [
+    "mlir::async::AsyncDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 #endif // EAAC_PASSES

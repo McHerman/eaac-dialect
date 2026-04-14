@@ -4,6 +4,7 @@ add_mlir_library(EAACTransforms
   MemRefLivenessAnalysis.cpp
   LocalStaging.cpp
   LowerCopyToDma.cpp
+  EncodeDependencies.cpp
 
   DEPENDS
   EAACPassIncGen
@@ -14,5 +15,7 @@ add_mlir_library(EAACTransforms
   MLIRSupport
   MLIRFuncDialect
   MLIRMemRefDialect
+  MLIRAsyncDialect
+  MLIRLinalgDialect
   MLIRAnalysis
 )

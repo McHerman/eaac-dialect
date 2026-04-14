@@ -37,6 +37,15 @@ std::unique_ptr<Pass> createLocalStagingPass();
 /// Creates pass to lower memref.copy to eaac.dma_start/dma_wait pairs
 std::unique_ptr<Pass> createLowerCopyToDmaPass();
 
+/// Creates pass to wrap DMA and compute ops in async.execute regions
+std::unique_ptr<Pass> createEncodeDependenciesPass();
+
+/// Creates pass to find and wire async.token dependencies between async.execute regions
+std::unique_ptr<Pass> createFindAsyncDependencyPass();
+
+/// Creates pass to lower async.execute/tokens to hardware semaphores
+std::unique_ptr<Pass> createLowerAsyncToSemaphorePass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//
