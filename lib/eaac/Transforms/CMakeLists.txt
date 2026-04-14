@@ -5,6 +5,8 @@ add_mlir_library(EAACTransforms
   LocalStaging.cpp
   LowerCopyToDma.cpp
   EncodeDependencies.cpp
+  FindAsyncDependency.cpp
+  LowerAsyncToSemaphore.cpp
 
   DEPENDS
   EAACPassIncGen
@@ -17,5 +19,6 @@ add_mlir_library(EAACTransforms
   MLIRMemRefDialect
   MLIRAsyncDialect
   MLIRLinalgDialect
+  MLIRArithDialect
   MLIRAnalysis
 )
