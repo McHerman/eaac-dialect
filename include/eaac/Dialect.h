@@ -15,6 +15,9 @@
 
 #include "eaac/Dialect.h.inc"
 
+#define GET_TYPEDEF_CLASSES
+#include "eaac/Types.h.inc"
+
 #define GET_OP_CLASSES
 #include "eaac/Ops.h.inc"
 

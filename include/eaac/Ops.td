@@ -8,7 +8,9 @@
 #define EAAC_OPS
 
 include "eaac/EAAC.td"
+include "eaac/Types.td"
 include "mlir/Dialect/Async/IR/AsyncTypes.td"
+include "mlir/IR/OpAsmInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//
@@ -41,7 +43,8 @@ def DmaStartOp : EAAC_Op<"dma_start", [DeclareOpInterfaceMethods<MemoryEffectsOp
 // SemAllocOp - Allocate and initialize a hardware semaphore pair
 //===----------------------------------------------------------------------===//
 
-def SemAllocOp : EAAC_Op<"sem_alloc"> {
+def SemAllocOp : EAAC_Op<"sem_alloc", [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
   let summary = "Allocate and initialize a hardware semaphore pair";
   let description = [{
     Allocates a semaphore pair from the hardware bank and initializes it
@@ -58,10 +61,10 @@ def SemAllocOp : EAAC_Op<"sem_alloc"> {
   }];
 
   let arguments = (ins Index:$empty_count, Index:$full_count);
-  let results = (outs Index:$semaphore);
+  let results = (outs EAAC_SemaphoreType:$semaphore);
 
   let assemblyFormat = [{
-    `(` $empty_count `,` $full_count `)` attr-dict `:` type($semaphore)
+    `(` $empty_count `,` $full_count `)` attr-dict
   }];
 }
 
@@ -81,38 +84,93 @@ def SemDeallocOp : EAAC_Op<"sem_dealloc"> {
     ```
   }];
 
-  let arguments = (ins Index:$semaphore);
+  let arguments = (ins EAAC_SemaphoreType:$semaphore);
 
   let assemblyFormat = [{
-    `(` $semaphore `)` attr-dict `:` type($semaphore)
+    `(` $semaphore `)` attr-dict
   }];
 }
 
 //===----------------------------------------------------------------------===//
-// ComputeOp - Wrapper for compute operations with semaphore synchronization
+// ExecuteOp - Region wrapper for dependency-guarded operations
 //===----------------------------------------------------------------------===//
 
-def ComputeOp : EAAC_Op<"compute", [NoTerminator]> {
-  let summary = "Execute a compute region with semaphore synchronization";
+def ExecuteOp : EAAC_Op<"execute", [NoTerminator]> {
+  let summary = "Execute a region with dependency-guarded operations";
   let description = [{
-    Wraps compute operations (e.g. linalg ops) and associates them with
-    semaphore pairs for producer-consumer synchronization. The hardware
-    waits on input semaphores before execution and signals output
-    semaphores on completion.
+    Wraps operations that participate in producer-consumer synchronization.
+    Dependencies are expressed by eaac.require or eaac.sem_require ops
+    inside the body rather than as arguments to the region.
 
     Example:
     ```mlir
-    eaac.compute(%sem0, %sem1, %sem2) {
-      linalg.add ins(%a, %b : ...) outs(%c : ...)
+    eaac.execute {
+      eaac.sem_require %sem0, %buf_a : memref<8x8xf32>
+      eaac.dma_start(%src, %buf_a) : memref<8x8xf32>, memref<8x8xf32>
     }
     ```
   }];
 
-  let arguments = (ins Variadic<Index>:$semaphores);
   let regions = (region AnyRegion:$body);
 
   let assemblyFormat = [{
-    `(` $semaphores `)` attr-dict-with-keyword regions
+    attr-dict-with-keyword regions
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// SemRequireOp - Explicit semaphore-to-memref dependency pairing
+//===----------------------------------------------------------------------===//
+
+def SemRequireOp : EAAC_Op<"sem_require", [
+    TypesMatchWith<"result type matches memref type",
+                   "memref", "result", "$_self">]> {
+  let summary = "Pair a hardware semaphore with a specific memref";
+  let description = [{
+    Declares that `memref` is guarded by `semaphore` for producer-consumer
+    synchronization. Returns the same memref as a new SSA value.
+
+    Example:
+    ```mlir
+    %ready = eaac.sem_require %sem, %buf : memref<128x128xi8>
+    ```
+  }];
+
+  let arguments = (ins EAAC_SemaphoreType:$semaphore, AnyMemRef:$memref);
+  let results = (outs AnyMemRef:$result);
+
+  let assemblyFormat = [{
+    $semaphore `,` $memref attr-dict `:` type($memref)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// SemAcquireOp - Mark a producer's semaphore-to-memref pairing
+//===----------------------------------------------------------------------===//
+
+def SemAcquireOp : EAAC_Op<"sem_acquire", [
+    TypesMatchWith<"result type matches memref type",
+                   "memref", "result", "$_self">]> {
+  let summary = "Mark that a producer signals this semaphore on completion";
+  let description = [{
+    Declares that the producer writing to `memref` will signal `semaphore`
+    upon completion. Returns the same memref as a new SSA value.
+
+    This is the producer-side counterpart to `eaac.sem_require`, which is
+    the consumer-side wait.
+
+    Example:
+    ```mlir
+    %acquired = eaac.sem_acquire %sem, %buf : memref<128x128xi8>
+    eaac.dma_start(%src, %acquired) : memref<128x128xi8>, memref<128x128xi8>
+    ```
+  }];
+
+  let arguments = (ins EAAC_SemaphoreType:$semaphore, AnyMemRef:$memref);
+  let results = (outs AnyMemRef:$result);
+
+  let assemblyFormat = [{
+    $semaphore `,` $memref attr-dict `:` type($memref)
   }];
 }
 

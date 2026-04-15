@@ -3,6 +3,7 @@ add_mlir_dialect_library(EAACDialect
 
   DEPENDS
   EAACIncGen
+  EAACTypesIncGen
 )
 
 target_link_libraries(EAACDialect

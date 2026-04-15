@@ -6,7 +6,9 @@
 
 #include "eaac/Dialect.h"
 
+#include "llvm/ADT/TypeSwitch.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 
 using namespace mlir;
@@ -19,8 +21,24 @@ using namespace mlir::eaac;
 #include "eaac/Dialect.cpp.inc"
 
 //===----------------------------------------------------------------------===//
+// TableGen'd type definitions
+//===----------------------------------------------------------------------===//
+
+#define GET_TYPEDEF_CLASSES
+#include "eaac/Types.cpp.inc"
+
+//===----------------------------------------------------------------------===//
 // TableGen'd op method definitions
 //===----------------------------------------------------------------------===//
+
+//===----------------------------------------------------------------------===//
+// SemAllocOp
+//===----------------------------------------------------------------------===//
+
+void SemAllocOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getSemaphore(), "sem");
+}
 
 //===----------------------------------------------------------------------===//
 // DmaStartOp
@@ -45,6 +63,10 @@ void DmaStartOp::getEffects(
 //===----------------------------------------------------------------------===//
 
 void EAACDialect::initialize() {
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "eaac/Types.cpp.inc"
+      >();
   addOperations<
 #define GET_OP_LIST
 #include "eaac/Ops.cpp.inc"

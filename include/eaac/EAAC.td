@@ -17,6 +17,7 @@ def EAAC_Dialect : Dialect {
   let name = "eaac";
   let summary = "EAAC example dialect";
   let cppNamespace = "::mlir::eaac";
+  let useDefaultTypePrinterParser = 1;
 }
 
 //===----------------------------------------------------------------------===//
