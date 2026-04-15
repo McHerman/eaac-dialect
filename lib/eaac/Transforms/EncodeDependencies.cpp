@@ -67,7 +67,8 @@ private:
     // Collect all ops to wrap first to avoid iterator invalidation.
     llvm::SmallVector<Operation *> targetOps;
     funcOp.walk([&](Operation *op) {
-      if (isa<DmaStartOp>(op) || isa<linalg::LinalgOp>(op))
+      if (isa<DmaStartOp>(op) ||
+          (isa<linalg::LinalgOp>(op) && !isa<linalg::FillOp>(op)))
         targetOps.push_back(op);
     });
 
