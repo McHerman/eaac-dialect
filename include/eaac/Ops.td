@@ -8,14 +8,14 @@
 #define EAAC_OPS
 
 include "eaac/EAAC.td"
+include "mlir/Dialect/Async/IR/AsyncTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // DmaStartOp - Initiate an asynchronous DMA transfer
 //===----------------------------------------------------------------------===//
 
-def DmaStartOp : EAAC_Op<"dma_start", [MemoryEffects<[MemRead<DefaultResource>,
-                                                        MemWrite<DefaultResource>]>]> {
+def DmaStartOp : EAAC_Op<"dma_start", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Start an asynchronous DMA transfer between memory tiers";
   let description = [{
     Initiates an asynchronous DMA transfer from `src` to `dst`.
@@ -113,6 +113,34 @@ def ComputeOp : EAAC_Op<"compute", [NoTerminator]> {
 
   let assemblyFormat = [{
     `(` $semaphores `)` attr-dict-with-keyword regions
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// RequireOp - Explicit token-to-memref dependency pairing
+//===----------------------------------------------------------------------===//
+
+def RequireOp : EAAC_Op<"require", [
+    TypesMatchWith<"result type matches memref type",
+                   "memref", "result", "$_self">]> {
+  let summary = "Pair an async token dependency with a specific memref";
+  let description = [{
+    Declares that `memref` is only safe to use after `token` has resolved.
+    Returns the same memref as a new SSA value, threading the dependency
+    through the use-def chain.
+
+    Example:
+    ```mlir
+    %ready = eaac.require %token, %buf : memref<128x128xi8>
+    linalg.generic ins(%ready : memref<128x128xi8>) ...
+    ```
+  }];
+
+  let arguments = (ins Async_TokenType:$token, AnyMemRef:$memref);
+  let results = (outs AnyMemRef:$result);
+
+  let assemblyFormat = [{
+    $token `,` $memref attr-dict `:` type($memref)
   }];
 }
 

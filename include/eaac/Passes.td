@@ -137,6 +137,23 @@ def FindAsyncDependency : Pass<"eaac-find-async-dependency", "mlir::ModuleOp"> {
   ];
 }
 
+def InsertRequire : Pass<"eaac-insert-require", "mlir::ModuleOp"> {
+  let summary = "Insert eaac.require ops to pair async tokens with memrefs";
+  let description = [{
+    For each async.execute region, inspects the token dependencies and
+    traces them back to the producer ops to determine which memrefs they
+    guard. Inserts eaac.require ops that explicitly pair each token with
+    its corresponding memref, and replaces uses of the original memref
+    inside the consumer region with the require result.
+  }];
+  let constructor = "mlir::eaac::createInsertRequirePass()";
+
+  let dependentDialects = [
+    "mlir::async::AsyncDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 def LowerAsyncToSemaphore : Pass<"eaac-lower-async-to-semaphore", "mlir::ModuleOp"> {
   let summary = "Lower async.execute regions and tokens to hardware semaphores";
   let description = [{

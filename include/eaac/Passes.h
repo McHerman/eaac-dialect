@@ -43,6 +43,9 @@ std::unique_ptr<Pass> createEncodeDependenciesPass();
 /// Creates pass to find and wire async.token dependencies between async.execute regions
 std::unique_ptr<Pass> createFindAsyncDependencyPass();
 
+/// Creates pass to insert eaac.require ops pairing tokens with memrefs
+std::unique_ptr<Pass> createInsertRequirePass();
+
 /// Creates pass to lower async.execute/tokens to hardware semaphores
 std::unique_ptr<Pass> createLowerAsyncToSemaphorePass();
 

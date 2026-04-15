@@ -6,6 +6,7 @@ add_mlir_library(EAACTransforms
   LowerCopyToDma.cpp
   EncodeDependencies.cpp
   FindAsyncDependency.cpp
+  InsertRequire.cpp
   LowerAsyncToSemaphore.cpp
 
   DEPENDS
