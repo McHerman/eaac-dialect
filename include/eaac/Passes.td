@@ -172,4 +172,32 @@ def LowerAsyncToSemaphore : Pass<"eaac-lower-async-to-semaphore", "mlir::ModuleO
   ];
 }
 
+def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::ModuleOp"> {
+  let summary = "Assign static hardware addresses to semaphore pairs";
+  let description = [{
+    Uses a linear scan allocator to assign static hardware addresses to
+    semaphore pairs created by the LowerAsyncToSemaphore pass. Semaphores
+    are self-sequencing, so no spilling is required.
+
+    If the number of live semaphores exceeds the hardware limit, the pass
+    reuses the address of the soonest-finishing semaphore, provided its
+    consumer has already started executing. If this safety condition cannot
+    be met, the pass emits an error and aborts.
+
+    Annotates each eaac.sem_alloc with:
+      - eaac.sem_addr: the assigned hardware address (index)
+      - eaac.sem_reused: unit attr if the address was reused from a live sem
+  }];
+  let constructor = "mlir::eaac::createAssignSemaphoreAddressesPass()";
+
+  let options = [
+    Option<"numSemaphorePairs", "num-semaphore-pairs", "int64_t", "16",
+           "Number of hardware semaphore pairs available">
+  ];
+
+  let dependentDialects = [
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 #endif // EAAC_PASSES
