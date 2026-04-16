@@ -8,6 +8,7 @@ add_mlir_library(EAACTransforms
   FindAsyncDependency.cpp
   InsertRequire.cpp
   LowerAsyncToSemaphore.cpp
+  AssignSemaphoreAddresses.cpp
 
   DEPENDS
   EAACPassIncGen
