@@ -39,6 +39,9 @@
             lldb
             graphviz
 
+            # Serialization
+            flatbuffers
+
             # Other stuff
             just
           ];
