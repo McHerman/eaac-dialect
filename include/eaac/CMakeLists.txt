@@ -14,3 +14,6 @@ add_public_tablegen_target(EAACIncGen)
 set(LLVM_TARGET_DEFINITIONS Passes.td)
 mlir_tablegen(Passes.h.inc -gen-pass-decls -name EAAC)
 add_public_tablegen_target(EAACPassIncGen)
+
+# FlatBuffer schema generation
+add_subdirectory(Target)
