@@ -52,6 +52,9 @@ std::unique_ptr<Pass> createLowerAsyncToSemaphorePass();
 /// Creates pass to convert linalg ops to EAAC equivalents
 std::unique_ptr<Pass> createLinalgToEaacPass();
 
+/// Creates pass to replace function args/returns with eaac.load/store
+std::unique_ptr<Pass> createInsertLoadStorePass();
+
 /// Creates pass to assign static hardware addresses to semaphore pairs
 std::unique_ptr<Pass> createAssignSemaphoreAddressesPass();
 

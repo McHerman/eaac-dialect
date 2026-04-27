@@ -193,6 +193,19 @@ def LinalgToEaac : Pass<"convert-linalg-to-eaac", "mlir::ModuleOp"> {
   ];
 }
 
+def InsertLoadStore : Pass<"eaac-insert-load-store", "mlir::ModuleOp"> {
+  let summary = "Flatten hierarchy, replace main function parameters with load, returns with store";
+  let description = [{
+
+  }];
+  let constructor = "mlir::eaac::createInsertLoadStorePass()";
+
+  let dependentDialects = [
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
+
 def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::ModuleOp"> {
   let summary = "Assign static hardware addresses to semaphore pairs";
   let description = [{

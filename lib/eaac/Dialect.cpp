@@ -73,6 +73,34 @@ void MatmulOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+//===----------------------------------------------------------------------===//
+// LoadOp
+//===----------------------------------------------------------------------===//
+
+void LoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       /*stage=*/0, /*effectOnFullRegion=*/true,
+                       SideEffects::DefaultResource::get());
+}
+
+//===----------------------------------------------------------------------===//
+// StoreOp
+//===----------------------------------------------------------------------===//
+
+void StoreOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrcMutable(),
+                       /*stage=*/0, /*effectOnFullRegion=*/true,
+                       SideEffects::DefaultResource::get());
+  // Mark as writing to an external resource so the op is not DCE'd.
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       /*stage=*/0, /*effectOnFullRegion=*/true,
+                       SideEffects::DefaultResource::get());
+}
+
 #define GET_OP_CLASSES
 #include "eaac/Ops.cpp.inc"
 

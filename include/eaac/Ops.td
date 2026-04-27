@@ -61,6 +61,50 @@ def MatmulOp : EAAC_Op<"matmul", [DeclareOpInterfaceMethods<MemoryEffectsOpInter
   }];
 }
 
+
+//===----------------------------------------------------------------------===//
+// LoadOp, EAAC main parameter passing operation 
+//===----------------------------------------------------------------------===//
+
+def LoadOp : EAAC_Op<"load", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Loads data from host, computed in order";
+  let description = [{
+    Loads data from host into memory. Loaded data is a memref
+
+    Example:
+    ```mlir
+    eaac.load(%alloc_0) : memref<128x128xi8>
+    ```
+  }];
+  let arguments = (ins AnyMemRef:$dst);
+  let assemblyFormat = [{
+    `(` $dst `)` attr-dict `:` type($dst)
+  }];
+}
+
+
+//===----------------------------------------------------------------------===//
+// StoreOp, EAAC return to host 
+//===----------------------------------------------------------------------===//
+
+def StoreOp : EAAC_Op<"store", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Returns data to host, computed in order";
+  let description = [{
+    Returns from memory to host.
+
+    Example:
+    ```mlir
+    eaac.store(%alloc_0) : memref<128x128xi8>
+    ```
+  }];
+  let arguments = (ins AnyMemRef:$src);
+  let assemblyFormat = [{
+    `(` $src `)` attr-dict `:` type($src)
+  }];
+}
+
+
+
 //===----------------------------------------------------------------------===//
 // SemAllocOp - Allocate and initialize a hardware semaphore pair
 //===----------------------------------------------------------------------===//

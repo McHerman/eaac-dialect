@@ -68,7 +68,9 @@ private:
     llvm::SmallVector<Operation *> targetOps;
     funcOp.walk([&](Operation *op) {
       if (isa<DmaStartOp>(op) ||
-          (isa<linalg::LinalgOp>(op) && !isa<linalg::FillOp>(op)))
+          (isa<linalg::LinalgOp>(op) && !isa<linalg::FillOp>(op)) ||
+          (isa<LoadOp>(op)) ||
+          (isa<StoreOp>(op)))
         targetOps.push_back(op);
     });
 

@@ -36,16 +36,19 @@ clean:
 rebuild: clean all
 
 test-buf:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline test/input_8_tiny.mlir
+    {{eaac_opt}} --inline --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params  test/input_8_tiny.mlir
 
 test-local-staging:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging test/input_8_tiny.mlir
 
+test-insert:
+    {{eaac_opt}} --inline --canonicalize --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --eaac-insert-load-store test/test_load_insert.mlir
+
 test-almost-full:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses test/input_8_tiny.mlir
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses test/input_8_tiny.mlir
 
 test-full:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/input_8_tiny.mlir
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/input_8_small.mlir
 
 # Configure and build with -O0 for debugging (separate build dir)
 build-debug:

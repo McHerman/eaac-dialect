@@ -9,6 +9,7 @@ add_mlir_library(EAACTransforms
   InsertRequire.cpp
   LowerAsyncToSemaphore.cpp
   LinalgToEaac.cpp
+  InsertLoadStore.cpp
   AssignSemaphoreAddresses.cpp
 
   DEPENDS
