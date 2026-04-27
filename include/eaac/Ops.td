@@ -40,6 +40,28 @@ def DmaStartOp : EAAC_Op<"dma_start", [DeclareOpInterfaceMethods<MemoryEffectsOp
 }
 
 //===----------------------------------------------------------------------===//
+// MatmulOp, EAAC local matrix multiplication 
+//===----------------------------------------------------------------------===//
+
+def MatmulOp : EAAC_Op<"matmul", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Perform a matmul operation, using internal 8 bit truncation, really bad";
+  let description = [{
+    Performs a matrix multiplication with data of size 128x128xi8 from addresses
+    starting with \src0 and \src1. The operation writes the results to \dst.
+
+    Example:
+    ```mlir
+    eaac.matmul(%0, %1, %alloc_0) : memref<128x128xi8>, memref<128x128xi8>, memref<128x128xi8>
+    ```
+  }];
+  let arguments = (ins AnyMemRef:$src0, AnyMemRef:$src1, AnyMemRef:$dst);
+  let assemblyFormat = [{
+    `(` $src0 `,` $src1 `,` $dst `)` attr-dict
+    `:` type($src0) `,` type($src1) `,` type($dst)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // SemAllocOp - Allocate and initialize a hardware semaphore pair
 //===----------------------------------------------------------------------===//
 

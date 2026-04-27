@@ -172,6 +172,27 @@ def LowerAsyncToSemaphore : Pass<"eaac-lower-async-to-semaphore", "mlir::ModuleO
   ];
 }
 
+def LinalgToEaac : Pass<"convert-linalg-to-eaac", "mlir::ModuleOp"> {
+  let summary = "Convert linalg operations to EAAC equivalents";
+  let description = [{
+    Dialect conversion pass that replaces linalg operations with their EAAC
+    equivalents. Currently converts linalg.matmul to eaac.matmul.
+
+    The EAAC matmul supports dimensions up to 128x128x8 with i8 output
+    (internal quantization). Input matmuls must already be tiled to fit
+    within these constraints.
+
+    Marks the linalg dialect as illegal, so any unconverted linalg ops
+    (e.g. linalg.fill) will produce errors.
+  }];
+  let constructor = "mlir::eaac::createLinalgToEaacPass()";
+
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::ModuleOp"> {
   let summary = "Assign static hardware addresses to semaphore pairs";
   let description = [{
