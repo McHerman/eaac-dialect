@@ -55,6 +55,24 @@ void DmaStartOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+//===----------------------------------------------------------------------===//
+// MatmulOp
+//===----------------------------------------------------------------------===//
+
+void MatmulOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrc0Mutable(),
+                       /*stage=*/0, /*effectOnFullRegion=*/true,
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(), &getSrc1Mutable(),
+                       /*stage=*/0, /*effectOnFullRegion=*/true,
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable(),
+                       /*stage=*/0, /*effectOnFullRegion=*/true,
+                       SideEffects::DefaultResource::get());
+}
+
 #define GET_OP_CLASSES
 #include "eaac/Ops.cpp.inc"
 

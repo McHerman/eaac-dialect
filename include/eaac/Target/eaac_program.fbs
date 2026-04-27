@@ -1,0 +1,130 @@
+// EAAC Program FlatBuffer Schema
+// Serializes the final compiled IR into a binary format for runtime consumption.
+
+namespace eaac_fb;
+
+/// Element types for memref buffers.
+enum ElementType : byte {
+  I8 = 0,
+  I16,
+  I32,
+  I64,
+  F16,
+  F32,
+  F64
+}
+
+/// A reference to a statically allocated buffer.
+table BufferRef {
+  /// Static byte offset within its memory tier.
+  offset: uint64;
+  /// Memory tier (1=DRAM, 2=Global SRAM, 3=Local SRAM).
+  tier: uint8;
+  /// Shape dimensions (e.g. [128, 128]).
+  shape: [uint32];
+  /// Element type.
+  element_type: ElementType;
+}
+
+/// Allocate and initialize a hardware semaphore pair.
+table SemAlloc {
+  /// Static hardware address (0–15).
+  address: uint16;
+  /// Initial empty count.
+  empty_count: uint32;
+  /// Initial full count.
+  full_count: uint32;
+}
+
+/// Release a hardware semaphore pair.
+table SemDealloc {
+  /// Hardware address being released.
+  address: uint16;
+}
+
+/// A semaphore dependency inside an execute block.
+/// Pairs a semaphore address with a buffer reference.
+table SemDep {
+  /// Hardware semaphore address.
+  sem_address: uint16;
+  /// The buffer this dependency guards.
+  buffer: BufferRef;
+}
+
+/// An asynchronous DMA transfer operation.
+table DmaStart {
+  src: BufferRef;
+  dst: BufferRef;
+}
+
+/// A compute operation (linalg op executed on local SRAM).
+table Compute {
+  /// Name of the linalg operation (e.g. "linalg.add", "linalg.matmul").
+  op_name: string;
+  inputs: [BufferRef];
+  outputs: [BufferRef];
+}
+
+/// The payload of an execute block — either a DMA or a compute.
+union ExecutePayload { DmaStart, Compute }
+
+/// An execute block with semaphore acquire/require dependencies.
+table Execute {
+  /// Producer-side: semaphores to signal on completion.
+  acquires: [SemDep];
+  /// Consumer-side: semaphores to wait on before starting.
+  requires: [SemDep];
+  /// The operation to execute.
+  payload: ExecutePayload;
+}
+
+/// A fill operation (initializes a buffer with a constant).
+table Fill {
+  /// The buffer to fill.
+  dst: BufferRef;
+  /// The fill value as raw bytes (1 byte for i8, 4 bytes for f32, etc.).
+  value: [ubyte];
+}
+
+/// A memory allocation (for tier-2 intermediate buffers).
+table MemAlloc {
+  buffer: BufferRef;
+}
+
+/// A memory deallocation.
+table MemDealloc {
+  buffer: BufferRef;
+}
+
+/// Top-level command — the operations appear in program order.
+union Command { SemAlloc, SemDealloc, Execute, Fill, MemAlloc, MemDealloc }
+
+table Operation {
+  command: Command;
+}
+
+/// A function in the program.
+table Function {
+  name: string;
+  /// Function arguments (input buffers).
+  args: [BufferRef];
+  /// Function results (output buffers).
+  results: [BufferRef];
+  /// Operations in program order.
+  ops: [Operation];
+}
+
+/// Top-level program container.
+table Program {
+  /// Functions in the module.
+  functions: [Function];
+  /// Maximum number of hardware semaphore pairs used.
+  num_semaphores: uint16;
+  /// Memory required per tier in bytes: index 0=unused, 1=DRAM, 2=Global SRAM, 3=Local SRAM.
+  memory_per_tier: [uint64];
+}
+
+root_type Program;
+
+file_identifier "EAAC";
+file_extension "eaac";

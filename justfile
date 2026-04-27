@@ -41,8 +41,11 @@ test-buf:
 test-local-staging:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging test/input_8_tiny.mlir
 
-test-full:
+test-almost-full:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses test/input_8_tiny.mlir
+
+test-full:
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/input_8_tiny.mlir
 
 # Configure and build with -O0 for debugging (separate build dir)
 build-debug:
@@ -57,6 +60,10 @@ build-debug:
 # Run lit/FileCheck regression tests
 test: build
     {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test -v
+
+# Run full pipeline and serialize to FlatBuffer binary
+translate input output="output.eaac":
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses {{input}} | {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{output}}
 
 # Print available passes
 help-passes:
