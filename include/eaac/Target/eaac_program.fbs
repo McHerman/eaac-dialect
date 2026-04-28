@@ -14,6 +14,18 @@ enum ElementType : byte {
   F64
 }
 
+/// A constant tensor (weights, biases, etc.) embedded in the program.
+table Constant {
+  /// Name matching the memref.global symbol (e.g. "__constant_128x128xi8").
+  name: string;
+  /// Shape dimensions.
+  shape: [uint32];
+  /// Element type.
+  element_type: ElementType;
+  /// Raw data bytes (little-endian).
+  data: [ubyte];
+}
+
 /// A reference to a statically allocated buffer.
 table BufferRef {
   /// Static byte offset within its memory tier.
@@ -24,6 +36,8 @@ table BufferRef {
   shape: [uint32];
   /// Element type.
   element_type: ElementType;
+  /// If set, this buffer's initial contents come from the named constant.
+  constant_name: string;
 }
 
 /// Allocate and initialize a hardware semaphore pair.
@@ -57,6 +71,16 @@ table DmaStart {
   dst: BufferRef;
 }
 
+/// A load from host to accelerator, replaces function arguments
+table LoadOp {
+  dst: BufferRef;
+}
+
+// A store from accelerator to host, replaces function returns
+table StoreOp {
+  src: BufferRef;
+}
+
 /// A compute operation (linalg op executed on local SRAM).
 table Compute {
   /// Name of the linalg operation (e.g. "linalg.add", "linalg.matmul").
@@ -66,7 +90,7 @@ table Compute {
 }
 
 /// The payload of an execute block — either a DMA or a compute.
-union ExecutePayload { DmaStart, Compute }
+union ExecutePayload { DmaStart, Compute, LoadOp, StoreOp }
 
 /// An execute block with semaphore acquire/require dependencies.
 table Execute {
@@ -76,14 +100,6 @@ table Execute {
   requires: [SemDep];
   /// The operation to execute.
   payload: ExecutePayload;
-}
-
-/// A fill operation (initializes a buffer with a constant).
-table Fill {
-  /// The buffer to fill.
-  dst: BufferRef;
-  /// The fill value as raw bytes (1 byte for i8, 4 bytes for f32, etc.).
-  value: [ubyte];
 }
 
 /// A memory allocation (for tier-2 intermediate buffers).
@@ -97,7 +113,7 @@ table MemDealloc {
 }
 
 /// Top-level command — the operations appear in program order.
-union Command { SemAlloc, SemDealloc, Execute, Fill, MemAlloc, MemDealloc }
+union Command { SemAlloc, SemDealloc, Execute, MemAlloc, MemDealloc }
 
 table Operation {
   command: Command;
@@ -106,10 +122,9 @@ table Operation {
 /// A function in the program.
 table Function {
   name: string;
-  /// Function arguments (input buffers).
-  args: [BufferRef];
-  /// Function results (output buffers).
-  results: [BufferRef];
+
+  /// Removed args and results
+
   /// Operations in program order.
   ops: [Operation];
 }
@@ -122,6 +137,8 @@ table Program {
   num_semaphores: uint16;
   /// Memory required per tier in bytes: index 0=unused, 1=DRAM, 2=Global SRAM, 3=Local SRAM.
   memory_per_tier: [uint64];
+  /// Constant tensors (weights, biases) referenced by BufferRef.constant_name.
+  constants: [Constant];
 }
 
 root_type Program;

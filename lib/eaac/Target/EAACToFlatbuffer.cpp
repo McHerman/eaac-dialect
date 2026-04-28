@@ -9,7 +9,6 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
@@ -47,15 +46,16 @@ static fb::ElementType convertElementType(Type type) {
 }
 
 /// Build a BufferRef from a memref Value, reading eaac.offset and eaac.tier
-/// from its defining memref.alloc op.
+/// from its defining memref.alloc op, or constant_name from memref.get_global.
 static flatbuffers::Offset<fb::BufferRef>
 createBufferRef(flatbuffers::FlatBufferBuilder &builder, Value memref) {
   auto memrefType = cast<MemRefType>(memref.getType());
 
   uint64_t offset = 0;
   uint8_t tier = 0;
+  std::string constantName;
 
-  // Walk through sem_require / sem_acquire to find the underlying alloc.
+  // Walk through sem_require / sem_acquire to find the underlying alloc/global.
   Value current = memref;
   while (current) {
     if (auto allocOp = current.getDefiningOp<memref::AllocOp>()) {
@@ -74,7 +74,7 @@ createBufferRef(flatbuffers::FlatBufferBuilder &builder, Value memref) {
       continue;
     }
     if (auto getGlobalOp = current.getDefiningOp<memref::GetGlobalOp>()) {
-      // Global memrefs have no dynamic offset/tier — use defaults.
+      constantName = getGlobalOp.getName().str();
       break;
     }
     // Function argument or unknown — no offset/tier info.
@@ -85,9 +85,10 @@ createBufferRef(flatbuffers::FlatBufferBuilder &builder, Value memref) {
   for (int64_t dim : memrefType.getShape())
     shape.push_back(static_cast<uint32_t>(dim));
 
-  return fb::CreateBufferRefDirect(builder, offset, tier,
-                                   &shape,
-                                   convertElementType(memrefType.getElementType()));
+  auto elemType = convertElementType(memrefType.getElementType());
+  const char *constNamePtr = constantName.empty() ? nullptr : constantName.c_str();
+  return fb::CreateBufferRefDirect(builder, offset, tier, &shape, elemType,
+                                   constNamePtr);
 }
 
 /// Get the hardware semaphore address from a sem_alloc op via eaac.sem_addr.
@@ -150,6 +151,14 @@ serializeExecute(flatbuffers::FlatBufferBuilder &builder, ExecuteOp execOp) {
       payloadOffset =
           fb::CreateComputeDirect(builder, opName.c_str(), &inputs, &outputs)
               .Union();
+    } else if (auto loadOp = dyn_cast<LoadOp>(op)) {
+      auto dst = createBufferRef(builder, loadOp.getDst());
+      payloadType = fb::ExecutePayload_LoadOp;
+      payloadOffset = fb::CreateLoadOp(builder, dst).Union();
+    } else if (auto storeOp = dyn_cast<StoreOp>(op)) {
+      auto src = createBufferRef(builder, storeOp.getSrc());
+      payloadType = fb::ExecutePayload_StoreOp;
+      payloadOffset = fb::CreateStoreOp(builder, src).Union();
     }
   }
 
@@ -167,14 +176,6 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
 
   for (auto funcOp : module.getOps<func::FuncOp>()) {
     std::vector<flatbuffers::Offset<fb::Operation>> ops;
-    std::vector<flatbuffers::Offset<fb::BufferRef>> args;
-    std::vector<flatbuffers::Offset<fb::BufferRef>> results;
-
-    // Serialize function arguments.
-    for (BlockArgument arg : funcOp.getArguments()) {
-      if (isa<MemRefType>(arg.getType()))
-        args.push_back(createBufferRef(builder, arg));
-    }
 
     // Walk through operations in program order.
     funcOp.walk([&](Operation *op) {
@@ -196,30 +197,6 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
         auto exec = serializeExecute(builder, execOp);
         ops.push_back(fb::CreateOperation(builder, fb::Command_Execute,
                                           exec.Union()));
-      } else if (auto fillOp = dyn_cast<linalg::FillOp>(op)) {
-        auto dst = createBufferRef(builder, fillOp.getDpsInits()[0]);
-        // Extract fill value as raw bytes.
-        std::vector<uint8_t> valueBytes;
-        Value fillVal = fillOp.getDpsInputs()[0];
-        if (auto constOp = fillVal.getDefiningOp<arith::ConstantOp>()) {
-          if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-            int64_t v = intAttr.getInt();
-            unsigned bitWidth = intAttr.getType().getIntOrFloatBitWidth();
-            unsigned byteWidth = (bitWidth + 7) / 8;
-            for (unsigned i = 0; i < byteWidth; ++i)
-              valueBytes.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
-          } else if (auto fpAttr = dyn_cast<FloatAttr>(constOp.getValue())) {
-            APFloat apf = fpAttr.getValue();
-            APInt bits = apf.bitcastToAPInt();
-            unsigned byteWidth = (bits.getBitWidth() + 7) / 8;
-            for (unsigned i = 0; i < byteWidth; ++i)
-              valueBytes.push_back(
-                  static_cast<uint8_t>(bits.extractBitsAsZExtValue(8, i * 8)));
-          }
-        }
-        auto fill = fb::CreateFillDirect(builder, dst, &valueBytes);
-        ops.push_back(
-            fb::CreateOperation(builder, fb::Command_Fill, fill.Union()));
       } else if (auto allocOp = dyn_cast<memref::AllocOp>(op)) {
         auto buf = createBufferRef(builder, allocOp.getResult());
         auto ma = fb::CreateMemAlloc(builder, buf);
@@ -233,27 +210,41 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
       }
     });
 
-    // Serialize return values.
-    if (auto returnOp = funcOp.getBody().front().getTerminator()) {
-      for (Value operand : returnOp->getOperands()) {
-        if (isa<MemRefType>(operand.getType()))
-          results.push_back(createBufferRef(builder, operand));
+    auto name = builder.CreateString(funcOp.getName().str());
+    auto opsVec = builder.CreateVector(ops);
+    functions.push_back(fb::CreateFunction(builder, name, opsVec));
+  }
+
+  // Serialize memref.global constants.
+  std::vector<flatbuffers::Offset<fb::Constant>> constants;
+  for (auto globalOp : module.getOps<memref::GlobalOp>()) {
+    auto memrefType = globalOp.getType();
+    std::string name = globalOp.getSymName().str();
+
+    std::vector<uint32_t> shape;
+    for (int64_t dim : memrefType.getShape())
+      shape.push_back(static_cast<uint32_t>(dim));
+
+    auto elemType = convertElementType(memrefType.getElementType());
+
+    // Extract raw data bytes from the initial_value attribute.
+    std::vector<uint8_t> data;
+    if (auto initValue = globalOp.getInitialValue()) {
+      if (auto denseAttr = dyn_cast<DenseElementsAttr>(*initValue)) {
+        auto rawData = denseAttr.getRawData();
+        data.assign(rawData.begin(), rawData.end());
       }
     }
 
-    auto name = builder.CreateString(funcOp.getName().str());
-    auto argsVec = builder.CreateVector(args);
-    auto resultsVec = builder.CreateVector(results);
-    auto opsVec = builder.CreateVector(ops);
-    functions.push_back(
-        fb::CreateFunction(builder, name, argsVec, resultsVec, opsVec));
+    constants.push_back(fb::CreateConstantDirect(builder, name.c_str(), &shape,
+                                                 elemType, &data));
   }
 
   // Memory per tier — placeholder; could be computed from alloc attributes.
   std::vector<uint64_t> memPerTier = {0, 0, 0, 0}; // indices 0-3
 
   auto program = fb::CreateProgramDirect(builder, &functions, maxSemAddr,
-                                         &memPerTier);
+                                         &memPerTier, &constants);
   builder.Finish(program);
 
   os.write(reinterpret_cast<const char *>(builder.GetBufferPointer()),
@@ -274,7 +265,6 @@ void mlir::eaac::registerEAACToFlatbufferTranslation(
       },
       [](DialectRegistry &registry) {
         registry.insert<eaac::EAACDialect, func::FuncDialect,
-                        arith::ArithDialect, memref::MemRefDialect,
-                        linalg::LinalgDialect>();
+                        arith::ArithDialect, memref::MemRefDialect>();
       });
 }
