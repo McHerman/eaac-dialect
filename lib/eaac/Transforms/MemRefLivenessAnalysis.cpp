@@ -32,12 +32,11 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
     // Step 2: Compute liveness using MLIR's analysis
     Liveness liveness(funcOp);
 
-    funcOp.walk([&](memref::AllocOp allocOp) {
-      Value memref = allocOp.getResult();
-      Operation *startOp = allocOp;
-      Operation *endOp = allocOp;
+    // Compute a LiveInterval for any memref-producing result.
+    auto addInterval = [&](Value memref, Operation *defOp) {
+      Operation *startOp = defOp;
+      Operation *endOp = defOp;
 
-      // Find the last use across all blocks using Liveness
       for (Block &block : funcOp.getBody()) {
         const LivenessBlockInfo *blockInfo = liveness.getLiveness(&block);
         if (!blockInfo)
@@ -51,25 +50,19 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         }
       }
 
-      // Look up times for start and end operations.
-      // Use half-open intervals: end is one past the last use.
       int64_t startTime = opTime[startOp];
       int64_t endTime = opTime[endOp] + 1;
 
-      // Collect all uses of this memref (excluding deallocs, which only
-      // define the lifetime boundary but shouldn't drive spill decisions)
       llvm::SmallVector<MemRefUse> memRefUses;
       for (Operation *user : memref.getUsers()) {
         if (opTime.count(user) && !isa<memref::DeallocOp>(user)) {
           memRefUses.push_back({user, opTime[user]});
         }
       }
-      // Sort uses chronologically by time
       llvm::sort(memRefUses, [](const MemRefUse &a, const MemRefUse &b) {
         return a.time < b.time;
       });
 
-      // Create a unique ID using the SSA value name (e.g. "%alloc")
       std::string id;
       {
         AsmState state(funcOp);
@@ -77,7 +70,6 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         memref.printAsOperand(os, state);
       }
 
-      // Compute buffer size (number of elements)
       auto memrefType = llvm::cast<MemRefType>(memref.getType());
       mlir::Type elementType = memrefType.getElementType();
       int64_t bytes = elementType.getIntOrFloatBitWidth() / 8;
@@ -86,7 +78,6 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         if (dim != ShapedType::kDynamic)
           size *= dim;
       }
-
       size *= bytes;
 
       LLVM_DEBUG({
@@ -99,10 +90,18 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         llvm::dbgs() << "\n";
       });
 
-      // Create and store the LiveInterval
       LiveInterval interval(id, size, startTime, endTime, std::move(memRefUses),
                             memref);
       intervals.push_back(std::move(interval));
+    };
+
+    // Walk all ops and collect intervals for any that produce memref results.
+    funcOp.walk([&](Operation *op) {
+      for (Value result : op->getResults()) {
+        if (isa<MemRefType>(result.getType())) {
+          addInterval(result, op);
+        }
+      }
     });
   });
 }
