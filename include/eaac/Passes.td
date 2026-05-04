@@ -60,10 +60,10 @@ def LocalStaging : Pass<"eaac-local-staging", "mlir::ModuleOp"> {
     This pass inserts memref.copy operations to stage data into local SRAM
     before compute operations (like linalg ops) and copy results back afterward.
 
-    Memory hierarchy levels (encoded as memory spaces):
-      - 1: DRAM (external memory)
-      - 2: Global SRAM (shared on-chip memory)  
-      - 3: Local SRAM (per-unit scratchpad, required for arithmetic ops)
+    Memory hierarchy levels (encoded as tiers):
+      - 0: Local SRAM (per-unit scratchpad, required for arithmetic ops)
+      - 1: Global SRAM (shared on-chip memory)
+      - 2: DRAM (external memory)
 
     The pass:
     1. Walks through memrefs (linalg ops)

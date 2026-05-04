@@ -706,10 +706,10 @@ allocate(const AllocationProblem &problem,
     llvm::dbgs() << "\n";
   });
 
-  // Create memory tiers (level N = fastest/smallest, level 1 = slowest/largest)
+  // Create memory tiers (level 0 = fastest/smallest, level N = slowest/largest)
   llvm::SmallVector<MemoryTier, 4> tiers;
   for (auto [i, cap] : llvm::enumerate(tierCapacities)) {
-    int64_t level = static_cast<int64_t>(tierCapacities.size() - i);
+    int64_t level = static_cast<int64_t>(i);
     std::string name = "Tier " + std::to_string(level);
     tiers.emplace_back(std::move(name), cap, level);
   }
