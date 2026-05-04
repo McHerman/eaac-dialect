@@ -30,7 +30,7 @@ table Constant {
 table BufferRef {
   /// Static byte offset within its memory tier.
   offset: uint64;
-  /// Memory tier (1=DRAM, 2=Global SRAM, 3=Local SRAM).
+  /// Memory tier (0=Local SRAM, 1=Global SRAM, 2=DRAM).
   tier: uint8;
   /// Shape dimensions (e.g. [128, 128]).
   shape: [uint32];
@@ -61,36 +61,39 @@ table SemDealloc {
 table SemDep {
   /// Hardware semaphore address.
   sem_address: uint16;
-  /// The buffer this dependency guards.
-  buffer: BufferRef;
+  /// Index into the enclosing Function.buffers table.
+  buffer_id: uint32;
 }
 
 /// An asynchronous DMA transfer operation.
+/// Operands are indices into Function.buffers.
 table DmaStart {
-  src: BufferRef;
-  dst: BufferRef;
+  src: uint32;
+  dst: uint32;
 }
 
-/// A load from host to accelerator, replaces function arguments
+/// A load from host to accelerator, replaces function arguments.
+/// Operand is an index into Function.buffers.
 table LoadOp {
-  dst: BufferRef;
+  dst: uint32;
 }
 
-// A store from accelerator to host, replaces function returns
+// A store from accelerator to host, replaces function returns.
+// Operand is an index into Function.buffers.
 table StoreOp {
-  src: BufferRef;
+  src: uint32;
 }
 
-/// A compute operation (linalg op executed on local SRAM).
-table Compute {
-  /// Name of the linalg operation (e.g. "linalg.add", "linalg.matmul").
-  op_name: string;
-  inputs: [BufferRef];
-  outputs: [BufferRef];
+/// A matrix multiplication operation.
+/// Operands are indices into Function.buffers.
+table Matmul {
+  src0: uint32;
+  src1: uint32;
+  dst: uint32;
 }
 
-/// The payload of an execute block — either a DMA or a compute.
-union ExecutePayload { DmaStart, Compute, LoadOp, StoreOp }
+/// The payload of an execute block.
+union ExecutePayload { DmaStart, Matmul, LoadOp, StoreOp }
 
 /// An execute block with semaphore acquire/require dependencies.
 table Execute {
@@ -102,14 +105,14 @@ table Execute {
   payload: ExecutePayload;
 }
 
-/// A memory allocation (for tier-2 intermediate buffers).
+/// A memory allocation. Operand is an index into Function.buffers.
 table MemAlloc {
-  buffer: BufferRef;
+  buffer_id: uint32;
 }
 
-/// A memory deallocation.
+/// A memory deallocation. Operand is an index into Function.buffers.
 table MemDealloc {
-  buffer: BufferRef;
+  buffer_id: uint32;
 }
 
 /// Top-level command — the operations appear in program order.
@@ -123,7 +126,9 @@ table Operation {
 table Function {
   name: string;
 
-  /// Removed args and results
+  /// Distinct buffers referenced by this function. Commands and SemDeps
+  /// reference entries here by their index (buffer_id / src / dst / ...).
+  buffers: [BufferRef];
 
   /// Operations in program order.
   ops: [Operation];
@@ -135,7 +140,7 @@ table Program {
   functions: [Function];
   /// Maximum number of hardware semaphore pairs used.
   num_semaphores: uint16;
-  /// Memory required per tier in bytes: index 0=unused, 1=DRAM, 2=Global SRAM, 3=Local SRAM.
+  /// Memory required per tier in bytes: index 0=Local SRAM, 1=Global SRAM, 2=DRAM.
   memory_per_tier: [uint64];
   /// Constant tensors (weights, biases) referenced by BufferRef.constant_name.
   constants: [Constant];

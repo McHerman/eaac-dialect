@@ -36,19 +36,19 @@ clean:
 rebuild: clean all
 
 test-buf:
-    {{eaac_opt}} --inline --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params  test/input_8_tiny.mlir
+    {{eaac_opt}} --inline --one-shot-bufferize="bufferize-function-boundaries"  test/input_8_tiny.mlir
 
 test-local-staging:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging -debug-only=local-staging test/input_8_tiny.mlir
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-local-staging -debug-only=local-staging test/input_8_tiny.mlir
 
 test-insert:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-insert-load-store test/test_load_insert.mlir
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store test/test_load_insert.mlir
 
 test-almost-full:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/input_8_tiny.mlir
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/input_8_tiny.mlir
 
-test-full:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac --eaac-insert-load-store test/input_8_tiny.mlir
+test-full input="input_8_tiny":
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac --mlir-print-ir-after-all test/{{input}}.mlir
 
 # Configure and build with -O0 for debugging (separate build dir)
 build-debug:
@@ -65,8 +65,9 @@ test: build
     {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test -v
 
 # Run full pipeline and serialize to FlatBuffer binary
-translate input output="output.eaac":
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --buffer-results-to-out-params --inline --canonicalize --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac --eaac-insert-load-store {{input}} | {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{output}}
+translate input="input_8_tiny":
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/{{input}}.mlir | {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{input}}.eaac
+    flatc --json --raw-binary include/eaac/Target/eaac_program.fbs -- {{input}}.eaac
 
 # Rebuild FlatBuffer schema header
 flatbuf:
