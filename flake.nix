@@ -16,9 +16,13 @@
           name = "llvm-mlir-env";
           
           buildInputs = [
-            python3
-            python3Packages.pyutil
-            python3Packages.docutils
+            (python3.withPackages (ps: with ps; [
+              pyutil
+              docutils
+              pybind11
+              nanobind
+              numpy
+            ]))
             
             # Toolchain + build
             clang
