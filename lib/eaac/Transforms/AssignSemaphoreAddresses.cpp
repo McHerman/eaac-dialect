@@ -120,6 +120,12 @@ private:
   LogicalResult allocate(llvm::SmallVector<SemInterval> &intervals,
                          int64_t numPairs) {
     llvm::SmallVector<SemInterval *> active;
+    // High-water mark across the whole allocation: addresses [0, hwm) have
+    // been issued at least once. We hand out a never-issued address before
+    // recycling a freed one — pre-loaded command queues on infrequently-used
+    // FUs (e.g. the store unit) can otherwise see signaling on a recycled
+    // address and falsely trigger.
+    int64_t hwm = 0;
 
     for (auto &cur : intervals) {
       // Expire finished intervals.
@@ -140,12 +146,16 @@ private:
       for (auto *a : active)
         used[a->address] = true;
 
-      // Try to find a free address.
+      // Prefer a never-issued address; only recycle once hwm hits numPairs.
       int64_t freeAddr = -1;
-      for (int64_t i = 0; i < numPairs; ++i) {
-        if (!used[i]) {
-          freeAddr = i;
-          break;
+      if (hwm < numPairs) {
+        freeAddr = hwm++;
+      } else {
+        for (int64_t i = 0; i < numPairs; ++i) {
+          if (!used[i]) {
+            freeAddr = i;
+            break;
+          }
         }
       }
 
