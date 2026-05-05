@@ -208,11 +208,14 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
         auto sa = fb::CreateSemAlloc(builder, addr, emptyCnt, fullCnt);
         ops.push_back(fb::CreateOperation(builder, fb::Command_SemAlloc,
                                           sa.Union()));
-      } else if (auto semDealloc = dyn_cast<SemDeallocOp>(op)) {
-        uint16_t addr = getSemAddress(semDealloc.getSemaphore());
-        auto sd = fb::CreateSemDealloc(builder, addr);
-        ops.push_back(fb::CreateOperation(builder, fb::Command_SemDealloc,
-                                          sd.Union()));
+      // SemDealloc is intentionally not emitted: with fresh-address-first
+      // allocation, a later SemAlloc on a recycled address reinitializes
+      // the semaphore, so the fabric needs no explicit release signal.
+      // } else if (auto semDealloc = dyn_cast<SemDeallocOp>(op)) {
+      //   uint16_t addr = getSemAddress(semDealloc.getSemaphore());
+      //   auto sd = fb::CreateSemDealloc(builder, addr);
+      //   ops.push_back(fb::CreateOperation(builder, fb::Command_SemDealloc,
+      //                                     sd.Union()));
       } else if (auto execOp = dyn_cast<ExecuteOp>(op)) {
         auto exec = serializeExecute(builder, execOp, buffers);
         ops.push_back(fb::CreateOperation(builder, fb::Command_Execute,
