@@ -7,6 +7,7 @@
 
 #include "eaac/MemRefLivenessAnalysis.h"
 #include "eaac/Passes.h"
+#include "eaac/TargetInfo.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -690,9 +691,8 @@ void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
 }
 
 /// Run linear scan memory allocation with recursive spilling across N tiers.
-llvm::StringMap<int64_t>
-allocate(const AllocationProblem &problem,
-         llvm::ArrayRef<int64_t> tierCapacities = {49152, 147456, 16777216}) {
+llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
+                                  llvm::ArrayRef<int64_t> tierCapacities) {
 
   LLVM_DEBUG({
     llvm::dbgs() << "\n=== ALLOCATION START ===\nIntervals ("
@@ -751,7 +751,8 @@ public:
       problem.add(interval);
     }
 
-    auto map = allocate(problem);
+    EaacTarget target = getEaacTarget(getOperation());
+    auto map = allocate(problem, target.tierCapacities);
 
   }
 };

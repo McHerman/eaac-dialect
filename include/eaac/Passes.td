@@ -224,11 +224,6 @@ def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::Mo
   }];
   let constructor = "mlir::eaac::createAssignSemaphoreAddressesPass()";
 
-  let options = [
-    Option<"numSemaphorePairs", "num-semaphore-pairs", "int64_t", "16",
-           "Number of hardware semaphore pairs available">
-  ];
-
   let dependentDialects = [
     "mlir::eaac::EAACDialect"
   ];

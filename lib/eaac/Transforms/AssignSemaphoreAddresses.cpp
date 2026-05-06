@@ -12,6 +12,7 @@
 
 #include "eaac/Dialect.h"
 #include "eaac/Passes.h"
+#include "eaac/TargetInfo.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -58,8 +59,9 @@ public:
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    int64_t numPairs = getEaacTarget(module).numSemaphorePairs;
     auto result = module.walk([&](func::FuncOp funcOp) -> WalkResult {
-      if (failed(processFunction(funcOp)))
+      if (failed(processFunction(funcOp, numPairs)))
         return WalkResult::interrupt();
       return WalkResult::advance();
     });
@@ -230,14 +232,14 @@ private:
     }
   }
 
-  LogicalResult processFunction(func::FuncOp funcOp) {
+  LogicalResult processFunction(func::FuncOp funcOp, int64_t numPairs) {
     auto opNumbers = numberOperations(funcOp);
     auto intervals = buildIntervals(funcOp, opNumbers);
 
     if (intervals.empty())
       return success();
 
-    if (failed(allocate(intervals, numSemaphorePairs)))
+    if (failed(allocate(intervals, numPairs)))
       return failure();
 
     annotateIR(intervals);
