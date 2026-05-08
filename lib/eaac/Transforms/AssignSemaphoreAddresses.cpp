@@ -122,12 +122,11 @@ private:
   LogicalResult allocate(llvm::SmallVector<SemInterval> &intervals,
                          int64_t numPairs) {
     llvm::SmallVector<SemInterval *> active;
-    // High-water mark across the whole allocation: addresses [0, hwm) have
-    // been issued at least once. We hand out a never-issued address before
-    // recycling a freed one — pre-loaded command queues on infrequently-used
-    // FUs (e.g. the store unit) can otherwise see signaling on a recycled
-    // address and falsely trigger.
+
+    // High water mark
     int64_t hwm = 0;
+
+    llvm::SmallVector<int64_t> lastEnd(numPairs, -1);
 
     for (auto &cur : intervals) {
       // Expire finished intervals.
@@ -153,16 +152,20 @@ private:
       if (hwm < numPairs) {
         freeAddr = hwm++;
       } else {
+        // Pick the free address whose previous user finished earliest
+        // (least-recently-used). Ties broken by lowest index for determinism.
+        int64_t bestEnd = INT64_MAX;
         for (int64_t i = 0; i < numPairs; ++i) {
-          if (!used[i]) {
+          if (!used[i] && lastEnd[i] < bestEnd) {
+            bestEnd = lastEnd[i];
             freeAddr = i;
-            break;
           }
         }
       }
 
       if (freeAddr >= 0) {
         cur.address = freeAddr;
+        lastEnd[freeAddr] = cur.end;
         active.push_back(&cur);
         LLVM_DEBUG(llvm::dbgs() << "  assigned addr=" << freeAddr << " to sem @"
                                 << cur.start << "-" << cur.end << "\n");
