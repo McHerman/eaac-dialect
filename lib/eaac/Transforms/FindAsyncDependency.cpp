@@ -1,8 +1,11 @@
 //===- FindAsyncDependency.cpp - Wire async tokens between regions -------===//
 //
-// Pass to find and wire async.token dependencies between async.execute regions
-// based on memref SSA use-def chains. Since all memrefs are distinct SSA
-// values from memref.alloc, there is no aliasing to worry about.
+// Pass to find and wire async.token dependencies between async.execute
+// regions based on memref SSA use-def chains.
+//
+// Invariant: every memref has at most one writer across the function.
+// Under that invariant the dependency rule is just: for each memref read by
+// an async.execute, depend on the (unique) async.execute that wrote it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,7 +33,11 @@ namespace eaac {
 
 namespace {
 
-
+// Returns true iff `op` declares a value-bound Write effect on `memref`.
+// We deliberately ignore op-level Write effects with no bound value: in this
+// dialect those are used to model writes to external state (e.g. eaac.store)
+// to prevent DCE, not writes to any operand. Treating them as operand writes
+// would falsely attribute a writer to read-only operands.
 bool writesTo(Operation *op, Value memref) {
   auto effectOp = dyn_cast<MemoryEffectOpInterface>(op);
   if (!effectOp)
@@ -40,11 +47,7 @@ bool writesTo(Operation *op, Value memref) {
   for (auto &effect : effects) {
     if (!isa<MemoryEffects::Write>(effect.getEffect()))
       continue;
-    // Effect bound to specific value — match directly.
     if (effect.getValue() == memref)
-      return true;
-    // Op-level effect (no specific value) — fall back to operand check.
-    if (!effect.getValue() && llvm::is_contained(op->getOperands(), memref))
       return true;
   }
   return false;
@@ -61,80 +64,89 @@ public:
   }
 
 private:
+  // Populate `writer` with memref → producing async.execute. Asserts the
+  // single-writer invariant: a memref must not be written by two different
+  // async.executes.
+  static void buildWriterMap(
+      llvm::ArrayRef<async::ExecuteOp> executeOps,
+      llvm::DenseMap<Value, async::ExecuteOp> &writer) {
+    for (auto exec : executeOps) {
+      exec.getBody()->walk([&](Operation *innerOp) {
+        for (Value operand : innerOp->getOperands()) {
+          if (!isa<MemRefType>(operand.getType()))
+            continue;
+          if (!writesTo(innerOp, operand))
+            continue;
+          auto [it, inserted] = writer.try_emplace(operand, exec);
+          assert((inserted || it->second == exec) &&
+                 "memref written by more than one async.execute");
+          (void)it;
+          (void)inserted;
+        }
+      });
+    }
+  }
+
+  // Collect the set of async.executes that produced any memref read inside
+  // `exec`, excluding `exec` itself.
+  static llvm::DenseSet<async::ExecuteOp> collectDeps(
+      async::ExecuteOp exec,
+      const llvm::DenseMap<Value, async::ExecuteOp> &writer) {
+    llvm::DenseSet<async::ExecuteOp> deps;
+    exec.getBody()->walk([&](Operation *innerOp) {
+      for (Value operand : innerOp->getOperands()) {
+        if (!isa<MemRefType>(operand.getType()))
+          continue;
+        auto it = writer.find(operand);
+        if (it == writer.end() || it->second == exec)
+          continue;
+        deps.insert(it->second);
+      }
+    });
+    return deps;
+  }
+
+  // Replace `exec` with an equivalent async.execute that additionally
+  // depends on `deps`. Returns the new op.
+  static async::ExecuteOp rewriteWithDeps(
+      async::ExecuteOp exec, const llvm::DenseSet<async::ExecuteOp> &deps) {
+    llvm::SmallVector<Value> newDeps(exec.getDependencies());
+    for (auto dep : deps)
+      newDeps.push_back(dep.getToken());
+
+    OpBuilder builder(exec->getBlock(), ++Block::iterator(exec));
+    auto newOp = async::ExecuteOp::create(
+        builder, exec.getLoc(),
+        /*resultTypes=*/TypeRange{},
+        /*dependencies=*/newDeps,
+        /*operands=*/ValueRange{});
+
+    newOp.getBody()->getOperations().clear();
+    newOp.getBody()->getOperations().splice(
+        newOp.getBody()->end(), exec.getBody()->getOperations());
+
+    exec.getToken().replaceAllUsesWith(newOp.getToken());
+    exec.erase();
+    return newOp;
+  }
+
   void processFunction(func::FuncOp funcOp) {
-    // Collect all async.execute ops in program order.
     llvm::SmallVector<async::ExecuteOp> executeOps;
     funcOp.walk([&](async::ExecuteOp op) { executeOps.push_back(op); });
 
-    // Map each async.execute to its program-order index.
-    llvm::DenseMap<Operation *, int64_t> execIndex;
-    for (auto [i, op] : llvm::enumerate(executeOps))
-      execIndex[op] = i;
+    llvm::DenseMap<Value, async::ExecuteOp> writer;
+    buildWriterMap(executeOps, writer);
 
-    // Track which async.execute ops come before the current one.
-    llvm::DenseSet<async::ExecuteOp> preceding;
-
-    for (auto executeOp : executeOps) {
-      // For each memref operand, find the latest preceding writer.
-      llvm::DenseMap<Value, async::ExecuteOp> latestProducer;
-
-      executeOp.getBody()->walk([&](Operation *innerOp) {
-        for (Value memref : innerOp->getOperands()) {
-          if (!isa<MemRefType>(memref.getType()))
-            continue;
-
-          for (Operation *user : memref.getUsers()) {
-            if (user == innerOp)
-              continue;
-            // Checks if the op is a consumer or producer
-            if (!writesTo(user, memref))
-              continue;
-
-            auto producerExec = user->getParentOfType<async::ExecuteOp>();
-            if (!producerExec || producerExec == executeOp ||
-                !preceding.contains(producerExec))
-              continue;
-
-            auto it = latestProducer.find(memref);
-            if (it == latestProducer.end() ||
-                execIndex[producerExec] > execIndex[it->second])
-              latestProducer[memref] = producerExec;
-          }
-        }
-      });
-
-      // Collect unique deps from the latest producers.
-      llvm::DenseSet<async::ExecuteOp> deps;
-      for (auto &[memref, producer] : latestProducer)
-        deps.insert(producer);
-
-      if (deps.empty()) {
-        preceding.insert(executeOp);
+    for (auto exec : executeOps) {
+      auto deps = collectDeps(exec, writer);
+      if (deps.empty())
         continue;
-      }
-
-      // Rebuild async.execute after the current position with dependency tokens.
-      llvm::SmallVector<Value> newDeps(executeOp.getDependencies());
-      for (auto dep : deps)
-        newDeps.push_back(dep.getToken());
-
-      OpBuilder builder(executeOp->getBlock(), ++Block::iterator(executeOp));
-      auto newOp = async::ExecuteOp::create(
-          builder, executeOp.getLoc(),
-          /*resultTypes=*/TypeRange{},
-          /*dependencies=*/newDeps,
-          /*operands=*/ValueRange{});
-
-      // Move body.
-      newOp.getBody()->getOperations().clear();
-      newOp.getBody()->getOperations().splice(
-          newOp.getBody()->end(),
-          executeOp.getBody()->getOperations());
-
-      executeOp.getToken().replaceAllUsesWith(newOp.getToken());
-      execIndex[newOp] = execIndex[executeOp];
-      preceding.insert(newOp);
-      executeOp.erase();
+      async::ExecuteOp newOp = rewriteWithDeps(exec, deps);
+      // Keep the writer map valid: any memref previously attributed to
+      // `exec` is now produced by `newOp`.
+      for (auto &entry : writer)
+        if (entry.second == exec)
+          entry.second = newOp;
     }
   }
 };
