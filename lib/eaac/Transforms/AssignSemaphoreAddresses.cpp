@@ -12,8 +12,8 @@
 
 #include "eaac/Dialect.h"
 #include "eaac/Passes.h"
-#include "eaac/TargetInfo.h"
 
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
@@ -52,6 +52,35 @@ struct SemInterval {
 // Pass
 //===----------------------------------------------------------------------===//
 
+/// Look up `num_semaphore_pairs` on the EAAC device entry of the module's
+/// `dlti.target_system_spec`. The spec is mandatory.
+static FailureOr<int64_t> getEaacNumSemaphorePairs(ModuleOp module) {
+  auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
+      module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
+  if (!sysSpec)
+    return module.emitError("missing 'dlti.target_system_spec' on module");
+
+  auto deviceId = StringAttr::get(module.getContext(), "EAAC");
+  std::optional<TargetDeviceSpecInterface> deviceSpec =
+      sysSpec.getDeviceSpecForDeviceID(deviceId);
+  if (!deviceSpec)
+    return module.emitError(
+        "missing 'EAAC' device entry in 'dlti.target_system_spec'");
+
+  for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
+    auto key = dyn_cast<StringAttr>(entry.getKey());
+    if (!key || key.getValue() != "num_semaphore_pairs")
+      continue;
+    auto i = dyn_cast<IntegerAttr>(entry.getValue());
+    if (!i)
+      return module.emitError("'num_semaphore_pairs': expected integer, got ")
+             << entry.getValue();
+    return i.getInt();
+  }
+  return module.emitError(
+      "'num_semaphore_pairs' not found in EAAC device spec");
+}
+
 class AssignSemaphoreAddressesPass
     : public impl::AssignSemaphoreAddressesBase<AssignSemaphoreAddressesPass> {
 public:
@@ -59,9 +88,12 @@ public:
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    int64_t numPairs = getEaacTarget(module).numSemaphorePairs;
+    FailureOr<int64_t> numPairs = getEaacNumSemaphorePairs(module);
+    if (failed(numPairs))
+      return signalPassFailure();
+
     auto result = module.walk([&](func::FuncOp funcOp) -> WalkResult {
-      if (failed(processFunction(funcOp, numPairs)))
+      if (failed(processFunction(funcOp, *numPairs)))
         return WalkResult::interrupt();
       return WalkResult::advance();
     });

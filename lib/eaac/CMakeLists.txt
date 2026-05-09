@@ -1,6 +1,5 @@
 add_mlir_dialect_library(EAACDialect
   Dialect.cpp
-  TargetInfo.cpp
 
   DEPENDS
   EAACIncGen

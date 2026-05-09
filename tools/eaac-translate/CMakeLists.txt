@@ -19,6 +19,7 @@ target_link_libraries(eaac-translate
   MLIRParser
   MLIRSupport
   MLIRTranslateLib
+  MLIRDLTIDialect
   MLIRFuncDialect
   MLIRArithDialect
   MLIRAsyncDialect

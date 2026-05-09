@@ -124,6 +124,11 @@ def instrument(src: str, seed: int) -> tuple:
     with ir.Context() as ctx, ir.Location.unknown():
         ctx.allow_unregistered_dialects = True
         module = ir.Module.parse(src)
+        # The DLTI spec is EAAC-only configuration; drop it so the reference
+        # path (which feeds mlir-runner) doesn't need DLTI registered.
+        module_attrs = module.operation.attributes
+        if "dlti.target_system_spec" in module_attrs:
+            del module_attrs["dlti.target_system_spec"]
         main_op = None
         for op in module.body.operations:
             if op.OPERATION_NAME == "func.func" and op.sym_name.value == "main":

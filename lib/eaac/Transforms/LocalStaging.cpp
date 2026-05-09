@@ -7,8 +7,8 @@
 
 #include "eaac/MemRefLivenessAnalysis.h"
 #include "eaac/Passes.h"
-#include "eaac/TargetInfo.h"
 
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -736,12 +736,48 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
 
 
 
+/// Look up `tier_capacities` on the EAAC device entry of the module's
+/// `dlti.target_system_spec`. The spec is mandatory.
+static FailureOr<SmallVector<int64_t>>
+getEaacTierCapacities(ModuleOp module) {
+  auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
+      module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
+  if (!sysSpec)
+    return module.emitError("missing 'dlti.target_system_spec' on module");
+
+  auto deviceId = StringAttr::get(module.getContext(), "EAAC");
+  std::optional<TargetDeviceSpecInterface> deviceSpec =
+      sysSpec.getDeviceSpecForDeviceID(deviceId);
+  if (!deviceSpec)
+    return module.emitError(
+        "missing 'EAAC' device entry in 'dlti.target_system_spec'");
+
+  for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
+    auto key = dyn_cast<StringAttr>(entry.getKey());
+    if (!key || key.getValue() != "tier_capacities")
+      continue;
+    auto arr = dyn_cast<DenseI64ArrayAttr>(entry.getValue());
+    if (!arr)
+      return module.emitError("'tier_capacities': expected array<i64>, got ")
+             << entry.getValue();
+    return SmallVector<int64_t>(arr.asArrayRef().begin(),
+                                arr.asArrayRef().end());
+  }
+  return module.emitError(
+      "'tier_capacities' not found in EAAC device spec");
+}
+
 class LocalStagingPass
     : public impl::LocalStagingBase<LocalStagingPass> {
 public:
   using LocalStagingBase::LocalStagingBase;
 
   void runOnOperation() override {
+    FailureOr<SmallVector<int64_t>> tierCapacities =
+        getEaacTierCapacities(getOperation());
+    if (failed(tierCapacities))
+      return signalPassFailure();
+
     // Get lifetime analysis from the AnalysisManager
     auto &livenessAnalysis = getAnalysis<MemRefLivenessAnalysis>();
     const auto &lifetimeInfos = livenessAnalysis.getIntervals();
@@ -751,9 +787,7 @@ public:
       problem.add(interval);
     }
 
-    EaacTarget target = getEaacTarget(getOperation());
-    auto map = allocate(problem, target.tierCapacities);
-
+    auto map = allocate(problem, *tierCapacities);
   }
 };
 

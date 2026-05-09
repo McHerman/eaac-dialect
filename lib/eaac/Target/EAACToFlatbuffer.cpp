@@ -8,6 +8,7 @@
 #include "eaac/Dialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -309,7 +310,7 @@ void mlir::eaac::registerEAACToFlatbufferTranslation(
         return translateToFlatbuffer(module, os);
       },
       [](DialectRegistry &registry) {
-        registry.insert<eaac::EAACDialect, func::FuncDialect,
+        registry.insert<eaac::EAACDialect, DLTIDialect, func::FuncDialect,
                         arith::ArithDialect, memref::MemRefDialect>();
       });
 }

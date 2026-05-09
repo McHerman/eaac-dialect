@@ -29,6 +29,7 @@ target_link_libraries(EAACTarget
   MLIRIR
   MLIRSupport
   MLIRTranslateLib
+  MLIRDLTIDialect
   MLIRFuncDialect
   MLIRArithDialect
   MLIRMemRefDialect

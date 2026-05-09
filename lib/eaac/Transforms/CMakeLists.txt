@@ -19,6 +19,7 @@ add_mlir_library(EAACTransforms
   MLIRIR
   MLIRPass
   MLIRSupport
+  MLIRDLTIDialect
   MLIRFuncDialect
   MLIRMemRefDialect
   MLIRAsyncDialect

@@ -6,6 +6,7 @@
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Tools/mlir-translate/MlirTranslateMain.h"
@@ -20,6 +21,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::memref::MemRefDialect>();
   registry.insert<mlir::arith::ArithDialect>();
+  registry.insert<mlir::DLTIDialect>();
 
   // Register the EAAC dialect.
   registry.insert<mlir::eaac::EAACDialect>();
