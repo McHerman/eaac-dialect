@@ -69,6 +69,8 @@ translate input="input_8_tiny":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/{{input}}.mlir | {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{input}}.eaac
     #flatc --json --raw-binary include/eaac/Target/eaac_program.fbs -- {{input}}.eaac
     python tools/test-harness/reference_runner.py test/{{input}}.mlir -o {{input}}.reference.json
+    cp {{input}}.eaac ../../hardware/ATAN/test
+    cp {{input}}.reference.json ../../hardware/ATAN/test
 
 # Rebuild FlatBuffer schema header
 flatbuf:
