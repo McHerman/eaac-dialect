@@ -66,11 +66,24 @@ private:
         if (!producerExec)
           continue;
 
+
         // Walk the producer's body to find which memref it writes to.
         producerExec.getBody()->walk([&](Operation *innerOp) {
           Value memref = findWrittenMemref(innerOp);
-          if (memref)
-            tokenToMemref[token] = memref;
+
+          if (!memref)
+            return;
+
+          // Self-sequencing of the different command queus, removed if adding additional pipelining
+          /*
+          if (llvm::any_of(executeOp.getBody()->without_terminator(),
+                           [&](Operation &op) {
+                             return op.getName() == innerOp->getName();
+                           }))
+            return;
+          */
+
+          tokenToMemref[token] = memref;
         });
       }
 

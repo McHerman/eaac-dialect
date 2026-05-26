@@ -10,6 +10,7 @@ target_link_libraries(EAACDialect
   PUBLIC
   MLIRIR
   MLIRSupport
+  MLIRDLTIDialect
 )
 
 add_subdirectory(Transforms)

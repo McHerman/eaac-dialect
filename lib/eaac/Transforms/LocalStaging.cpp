@@ -14,9 +14,11 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -529,6 +531,24 @@ bool allocateAtTier(LiveInterval &cur, size_t tierIdx,
                     minimalloc::Solver &solver,
                     llvm::StringMap<int64_t> &memMap);
 
+/// Result of emitting an alloc + copy pair: a freshly-allocated memref and
+/// the copy op that fills it from `src`. Used by both the spill path and the
+/// home-tier staging-chain emission.
+struct StagePoint {
+  Value memref;
+  memref::CopyOp copy;
+};
+
+/// Emit `%memref = memref.alloc; memref.copy %src, %memref` immediately
+/// before `insertBefore`.
+static StagePoint emitStage(OpBuilder &builder, Location loc, MemRefType type,
+                            Value src, Operation *insertBefore) {
+  builder.setInsertionPoint(insertBefore);
+  Value memref = memref::AllocOp::create(builder, loc, type);
+  auto copy = memref::CopyOp::create(builder, loc, src, memref);
+  return {memref, copy};
+}
+
 /// Handle spilling from a tier to the next tier.
 bool handleSpill(const LiveInterval &cur, size_t tierIdx,
                  llvm::SmallVector<MemoryTier, 4> &tiers,
@@ -572,22 +592,19 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   Value originalMemref = result.spilledMemref;
   auto type = llvm::cast<MemRefType>(originalMemref.getType());
   Location loc = originalMemref.getLoc();
-
-  // TODO, make this a function call
   OpBuilder builder(cur.memref.getDefiningOp());
-  builder.setInsertionPoint(cur.memref.getDefiningOp());
 
-  // Spill: alloc + copy original -> spill buffer
-  Value spillMemref = memref::AllocOp::create(builder, loc, type);
-  memref::CopyOp::create(builder, loc, originalMemref, spillMemref);
+  // Spill: alloc + copy original -> spill buffer, placed before the new alloc
+  // that triggered the spill.
+  Value spillMemref = emitStage(builder, loc, type, originalMemref,
+                                cur.memref.getDefiningOp()).memref;
 
   // Reload: alloc + copy spill -> reload buffer (placed at first use of reload)
   Value reloadMemref;
   if (hasReload && !result.reloadInterval->uses.empty()) {
     Operation *reloadPoint = result.reloadInterval->uses.front().op;
-    builder.setInsertionPoint(reloadPoint);
-    reloadMemref = memref::AllocOp::create(builder, loc, type);
-    memref::CopyOp::create(builder, loc, spillMemref, reloadMemref);
+    reloadMemref =
+        emitStage(builder, loc, type, spillMemref, reloadPoint).memref;
     memref::DeallocOp::create(builder, loc, spillMemref);
 
     // Rewrite uses of original memref to use the reload memref
@@ -736,11 +753,19 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
   minimalloc::Solver solver;
   llvm::StringMap<int64_t> memMap;
 
-  // Load intervals into top tier's unhandled list
-  tiers[0].unhandled = problem.sortedIntervals();
+  // Partition intervals into their requested home tier. Defaults to tier 0;
+  // synthetic stage intervals and explicit `eaac.home_tier` directives route
+  // here. Clamp out-of-range to the bottom tier.
+  for (auto &iv : problem.sortedIntervals()) {
+    size_t entry =
+        static_cast<size_t>(std::clamp<int64_t>(iv.homeTier, 0,
+                                                tiers.size() - 1));
+    tiers[entry].addUnhandled(std::move(iv));
+  }
 
-  // Process the top tier (recursively processes lower tiers as needed)
-  processTier(0, tiers, solver, memMap);
+  // Process bottom-up so residents land before their stagers reference them.
+  for (size_t t = tiers.size(); t-- > 0;)
+    processTier(t, tiers, solver, memMap);
 
   LLVM_DEBUG({
     llvm::dbgs() << "\n=== ALLOCATION COMPLETE ===\nFinal memMap ("
@@ -808,6 +833,98 @@ static FailureOr<EaacTargetSettings> getEaacTargetSettings(ModuleOp module) {
   return settings;
 }
 
+/// One planned staging chain: copies needed to transport a buffer up
+/// from its home tier to tier 0 in time for a single consumer.
+struct StagingChain {
+  size_t residentIdx; // index into the intervals vector
+  Operation *useOp; // the consumer being staged for
+  // TODO, change this to support n tier
+  llvm::SmallVector<size_t, 4> stageIdxs; // intervals, descending tier H-1..0
+};
+
+/// Build a single staging chain for one (resident, use) pair, appending the
+/// `homeTier` synthetic stage intervals (descending tier H-1 → 0) to
+/// `intervals`. `residentId`/`residentSize` are taken by value because we
+/// mutate `intervals` here; holding a reference into it across emplace_back
+/// would be invalidated on growth.
+static StagingChain
+makeStagingChain(size_t residentIdx, llvm::StringRef residentId,
+                 int64_t residentSize, int64_t homeTier, const MemRefUse &use,
+                 llvm::SmallVectorImpl<LiveInterval> &intervals) {
+  StagingChain chain{residentIdx, use.op, {}};
+  for (int64_t K : llvm::reverse(llvm::seq<int64_t>(0, homeTier))) {
+    std::string id = (llvm::Twine(residentId) + "_stage" + llvm::Twine(K) +
+                      "@" + llvm::Twine(use.time))
+                         .str();
+    chain.stageIdxs.push_back(intervals.size());
+    intervals.emplace_back(std::move(id), residentSize, use.time,
+                           use.time + 1,
+                           /*uses=*/llvm::SmallVector<MemRefUse>{},
+                           /*memref=*/Value(),
+                           /*offset=*/-1, /*homeTier=*/K);
+  }
+  return chain;
+}
+
+/// Synthesize per-use staging intervals for every interval with homeTier > 0.
+/// Appends synthetic LiveIntervals to `intervals` and returns one StagingChain
+/// per use. IR is *not* mutated here — that happens after allocation in
+/// emitStagingChains() once offsets are known.
+static llvm::SmallVector<StagingChain>
+planStagingChains(llvm::SmallVectorImpl<LiveInterval> &intervals) {
+  llvm::SmallVector<StagingChain> chains;
+  // Snapshot: only the original intervals get chains; the synthetic stages we
+  // append below would otherwise be visited recursively.
+  const size_t numOriginal = intervals.size();
+  for (size_t i : llvm::seq<size_t>(0, numOriginal)) {
+    // Copy the resident's fields by value: `intervals` is about to be appended
+    // to inside makeStagingChain, which can move the resident element.
+    const int64_t homeTier = intervals[i].homeTier;
+    if (homeTier <= 0)
+      continue;
+    const std::string id = intervals[i].id;
+    const int64_t size = intervals[i].size;
+    const llvm::SmallVector<MemRefUse> uses = intervals[i].uses;
+    for (const MemRefUse &use : uses)
+      chains.push_back(makeStagingChain(i, id, size, homeTier, use, intervals));
+  }
+  return chains;
+}
+
+/// Materialize the planned staging chains in IR: insert alloc+copy pairs in
+/// tier order H-1 → 0 right before each consumer, tag each alloc with its
+/// `eaac.tier` / `eaac.offset`, and rewrite the consumer to read from the
+/// tier-0 stage memref.
+static void emitStagingChains(llvm::ArrayRef<StagingChain> chains,
+                              llvm::ArrayRef<LiveInterval> intervals,
+                              const llvm::StringMap<int64_t> &memMap) {
+  for (const auto &chain : chains) {
+    const LiveInterval &resident = intervals[chain.residentIdx];
+    Value residentMemref = resident.memref;
+    if (!residentMemref)
+      continue;
+
+    auto type = llvm::cast<MemRefType>(residentMemref.getType());
+    Location loc = residentMemref.getLoc();
+    OpBuilder builder(chain.useOp);
+
+    Value src = residentMemref;
+    for (size_t stageIdx : chain.stageIdxs) {
+      const LiveInterval &stage = intervals[stageIdx];
+      StagePoint sp = emitStage(builder, loc, type, src, chain.useOp);
+      Operation *allocOp = sp.memref.getDefiningOp();
+      auto it = memMap.find(stage.id);
+      int64_t offset = it != memMap.end() ? it->second : 0;
+      allocOp->setAttr("eaac.tier",
+                       builder.getI64IntegerAttr(stage.homeTier));
+      allocOp->setAttr("eaac.offset", builder.getI64IntegerAttr(offset));
+      src = sp.memref;
+    }
+    // Point the consumer at the tier-0 stage in place of the resident.
+    chain.useOp->replaceUsesOfWith(residentMemref, src);
+  }
+}
+
 class LocalStagingPass
     : public impl::LocalStagingBase<LocalStagingPass> {
 public:
@@ -818,18 +935,39 @@ public:
         getEaacTargetSettings(getOperation());
     if (failed(settings))
       return signalPassFailure();
+    int64_t numTiers = static_cast<int64_t>(settings->tierCapacities.size());
 
     // Get lifetime analysis from the AnalysisManager
     auto &livenessAnalysis = getAnalysis<MemRefLivenessAnalysis>();
     const auto &lifetimeInfos = livenessAnalysis.getIntervals();
 
+    // Mutable working copy: we'll append synthetic staging intervals.
+    llvm::SmallVector<LiveInterval> intervals(lifetimeInfos.begin(),
+                                              lifetimeInfos.end());
+
+    // Apply kind-based default policy on top of any explicit eaac.home_tier:
+    // memref.get_global → bottom tier so constants don't compete for tier 0.
+    for (auto &iv : intervals) {
+      if (iv.homeTier != 0)
+        continue;
+      Operation *defOp = iv.memref ? iv.memref.getDefiningOp() : nullptr;
+      if (defOp && isa<memref::GetGlobalOp>(defOp))
+        iv.homeTier = numTiers - 1;
+    }
+
+    // Plan the per-use staging chains (appends synthetic intervals).
+    auto chains = planStagingChains(intervals);
+
     AllocationProblem problem;
-    for (const auto &interval : lifetimeInfos) {
+    for (const auto &interval : intervals) {
       problem.add(interval);
     }
 
     auto map = allocate(problem, settings->tierCapacities,
                         settings->reuseGuard);
+
+    // Emit IR for the planned chains using the offsets the allocator produced.
+    emitStagingChains(chains, intervals, map);
   }
 };
 

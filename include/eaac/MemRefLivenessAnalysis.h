@@ -33,6 +33,10 @@ struct LiveInterval {
   int64_t end;
   llvm::SmallVector<MemRefUse> uses;
   int64_t offset;
+  /// Preferred tier this buffer should reside in. Defaults to 0 (tier 0).
+  /// LocalStaging applies a kind-based default policy (e.g. memref.get_global
+  /// → tier N-1) on top of any explicit `eaac.home_tier` attribute.
+  int64_t homeTier;
   std::optional<int64_t> reloadFromTier;
   std::optional<int64_t> reloadFromOffset;
 
@@ -41,15 +45,16 @@ struct LiveInterval {
 
 
   LiveInterval()
-      : size(0), start(0), end(0), offset(-1), reloadFromTier(std::nullopt),
-        reloadFromOffset(std::nullopt) {}
+      : size(0), start(0), end(0), offset(-1), homeTier(0),
+        reloadFromTier(std::nullopt), reloadFromOffset(std::nullopt) {}
 
   LiveInterval(std::string id, int64_t size, int64_t start, int64_t end,
                llvm::SmallVector<MemRefUse> uses = {}, Value memref = Value(),
-               int64_t offset = -1)
+               int64_t offset = -1, int64_t homeTier = 0)
       : id(std::move(id)), size(size), start(start), end(end),
-        uses(std::move(uses)), offset(offset), reloadFromTier(std::nullopt),
-        reloadFromOffset(std::nullopt), memref(memref) {}
+        uses(std::move(uses)), offset(offset), homeTier(homeTier),
+        reloadFromTier(std::nullopt), reloadFromOffset(std::nullopt),
+        memref(memref) {}
 
   /// Comparison operator for sorting by start position.
   bool operator<(const LiveInterval &other) const { return start < other.start; }

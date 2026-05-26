@@ -11,6 +11,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/DataLayoutInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Debug.h"
@@ -22,6 +23,7 @@ namespace eaac {
 
 MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
   auto module = cast<ModuleOp>(op);
+  DataLayout dataLayout(module);
 
   module.walk([&](func::FuncOp funcOp) {
     // Step 1: Number all operations
@@ -72,7 +74,7 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
 
       auto memrefType = llvm::cast<MemRefType>(memref.getType());
       mlir::Type elementType = memrefType.getElementType();
-      int64_t bytes = elementType.getIntOrFloatBitWidth() / 8;
+      int64_t bytes = dataLayout.getTypeSize(elementType);
       int64_t size = 1;
       for (int64_t dim : memrefType.getShape()) {
         if (dim != ShapedType::kDynamic)
@@ -90,8 +92,17 @@ MemRefLivenessAnalysis::MemRefLivenessAnalysis(Operation *op) {
         llvm::dbgs() << "\n";
       });
 
+      // Pick up an explicit `eaac.home_tier` directive if present. Policy
+      // defaults (e.g. memref.get_global → tier N-1) are applied later in
+      // LocalStaging, which knows the tier count.
+      int64_t homeTier = 0;
+      if (defOp) {
+        if (auto attr = defOp->getAttrOfType<IntegerAttr>("eaac.home_tier"))
+          homeTier = attr.getInt();
+      }
+
       LiveInterval interval(id, size, startTime, endTime, std::move(memRefUses),
-                            memref);
+                            memref, /*offset=*/-1, homeTier);
       intervals.push_back(std::move(interval));
     };
 
