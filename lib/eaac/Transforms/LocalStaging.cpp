@@ -77,6 +77,11 @@ public:
   std::string name;
   int64_t capacity;
   int64_t level;
+  // Padding (in liveness time units) added to each buffer's lifespan upper
+  // bound when handed to the solver. Forces an address gap between a buffer
+  // that just died and the next buffer placed at the same offset, so anti-
+  // aliasing through allocator reuse becomes impossible within R steps.
+  int64_t reuseGuard = 0;
 
   llvm::SmallVector<Buffer> buffers;
   llvm::SmallVector<LiveInterval> active;
@@ -84,8 +89,10 @@ public:
   llvm::SmallVector<LiveInterval> unhandled;
 
   MemoryTier() : capacity(0), level(0) {}
-  MemoryTier(std::string name, int64_t capacity, int64_t level)
-      : name(std::move(name)), capacity(capacity), level(level) {}
+  MemoryTier(std::string name, int64_t capacity, int64_t level,
+             int64_t reuseGuard = 0)
+      : name(std::move(name)), capacity(capacity), level(level),
+        reuseGuard(reuseGuard) {}
 
   /// Remove and return a buffer by its id. Returns nullptr if not found.
   std::optional<Buffer> removeBuffer(llvm::StringRef bufferId) {
@@ -215,13 +222,16 @@ tryAllocate(MemoryTier &tier, const Buffer &buffer, minimalloc::Solver &solver) 
   // Add buffer to tier
   tier.buffers.push_back(buffer);
 
-  // Create minimalloc problem
+  // Create minimalloc problem. Lifespan upper bounds are padded by
+  // tier.reuseGuard so the solver enforces an address-reuse gap (see the
+  // MemoryTier::reuseGuard comment).
   minimalloc::Problem problem;
   problem.capacity = tier.capacity;
   for (const auto &buf : tier.buffers) {
     problem.buffers.push_back(minimalloc::Buffer{
         .id = buf.id,
-        .lifespan = {buf.lifespan.lower, buf.lifespan.upper},
+        .lifespan = {buf.lifespan.lower,
+                     buf.lifespan.upper + tier.reuseGuard},
         .size = buf.size,
         .alignment = buf.alignment,
         .gaps = {},
@@ -264,9 +274,12 @@ void expireTierIntervals(const LiveInterval &cur, MemoryTier &tier,
                          llvm::StringMap<int64_t> &memMap) {
   llvm::SmallVector<size_t> expiredIndices;
 
-  // Find expired intervals
+  // Find expired intervals. Respect tier.reuseGuard so a buffer stays in the
+  // active/conflict set for R extra steps after its true death — otherwise
+  // it'd be dropped before the next allocation could see it as a conflict
+  // and the guard would have no effect.
   for (size_t i = 0; i < tier.active.size(); ++i) {
-    if (tier.active[i].end <= cur.start) {
+    if (tier.active[i].end + tier.reuseGuard <= cur.start) {
       expiredIndices.push_back(i);
     }
   }
@@ -346,13 +359,15 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
   LLVM_DEBUG(llvm::dbgs() << "[selectSpillVictim] " << tier.name
                           << ": for cur.id=" << cur.id << "\n");
 
-  // Create problem to find IIS
+  // Create problem to find IIS. Pad lifespans consistently with tryAllocate
+  // so the IIS reflects the same conflict graph the solver would see.
   minimalloc::Problem problem;
   problem.capacity = tier.capacity;
   for (const auto &buf : tier.buffers) {
     problem.buffers.push_back(minimalloc::Buffer{
         .id = buf.id,
-        .lifespan = {buf.lifespan.lower, buf.lifespan.upper},
+        .lifespan = {buf.lifespan.lower,
+                     buf.lifespan.upper + tier.reuseGuard},
         .size = buf.size,
         .alignment = buf.alignment,
         .gaps = {},
@@ -691,8 +706,11 @@ void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
 }
 
 /// Run linear scan memory allocation with recursive spilling across N tiers.
+/// `reuseGuard` is the address-reuse padding (in liveness time units) applied
+/// uniformly to every tier; see MemoryTier::reuseGuard.
 llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
-                                  llvm::ArrayRef<int64_t> tierCapacities) {
+                                  llvm::ArrayRef<int64_t> tierCapacities,
+                                  int64_t reuseGuard = 0) {
 
   LLVM_DEBUG({
     llvm::dbgs() << "\n=== ALLOCATION START ===\nIntervals ("
@@ -703,7 +721,7 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
     llvm::dbgs() << "Tiers: ";
     for (auto cap : tierCapacities)
       llvm::dbgs() << cap << " ";
-    llvm::dbgs() << "\n";
+    llvm::dbgs() << "(reuseGuard=" << reuseGuard << ")\n";
   });
 
   // Create memory tiers (level 0 = fastest/smallest, level N = slowest/largest)
@@ -711,7 +729,7 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
   for (auto [i, cap] : llvm::enumerate(tierCapacities)) {
     int64_t level = static_cast<int64_t>(i);
     std::string name = "Tier " + std::to_string(level);
-    tiers.emplace_back(std::move(name), cap, level);
+    tiers.emplace_back(std::move(name), cap, level, reuseGuard);
   }
 
   // Initialize minimalloc solver
@@ -736,10 +754,17 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
 
 
 
-/// Look up `tier_capacities` on the EAAC device entry of the module's
-/// `dlti.target_system_spec`. The spec is mandatory.
-static FailureOr<SmallVector<int64_t>>
-getEaacTierCapacities(ModuleOp module) {
+/// Settings read from the EAAC entry of the module's DLTI spec.
+struct EaacTargetSettings {
+  SmallVector<int64_t> tierCapacities;
+  // Padding in liveness time units for address-reuse spreading; see
+  // MemoryTier::reuseGuard. Defaults to 0 (no spreading).
+  int64_t reuseGuard = 0;
+};
+
+/// Look up EAAC settings on the module's `dlti.target_system_spec`. The spec
+/// and the `tier_capacities` entry are mandatory; `reuse_guard` is optional.
+static FailureOr<EaacTargetSettings> getEaacTargetSettings(ModuleOp module) {
   auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
       module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
   if (!sysSpec)
@@ -752,19 +777,35 @@ getEaacTierCapacities(ModuleOp module) {
     return module.emitError(
         "missing 'EAAC' device entry in 'dlti.target_system_spec'");
 
+  EaacTargetSettings settings;
+  bool sawTierCapacities = false;
   for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
     auto key = dyn_cast<StringAttr>(entry.getKey());
-    if (!key || key.getValue() != "tier_capacities")
+    if (!key)
       continue;
-    auto arr = dyn_cast<DenseI64ArrayAttr>(entry.getValue());
-    if (!arr)
-      return module.emitError("'tier_capacities': expected array<i64>, got ")
-             << entry.getValue();
-    return SmallVector<int64_t>(arr.asArrayRef().begin(),
-                                arr.asArrayRef().end());
+    if (key.getValue() == "tier_capacities") {
+      auto arr = dyn_cast<DenseI64ArrayAttr>(entry.getValue());
+      if (!arr)
+        return module.emitError("'tier_capacities': expected array<i64>, got ")
+               << entry.getValue();
+      settings.tierCapacities.assign(arr.asArrayRef().begin(),
+                                     arr.asArrayRef().end());
+      sawTierCapacities = true;
+    } else if (key.getValue() == "reuse_guard") {
+      auto intAttr = dyn_cast<IntegerAttr>(entry.getValue());
+      if (!intAttr)
+        return module.emitError("'reuse_guard': expected i64, got ")
+               << entry.getValue();
+      settings.reuseGuard = intAttr.getInt();
+      if (settings.reuseGuard < 0)
+        return module.emitError("'reuse_guard' must be non-negative, got ")
+               << settings.reuseGuard;
+    }
   }
-  return module.emitError(
-      "'tier_capacities' not found in EAAC device spec");
+  if (!sawTierCapacities)
+    return module.emitError(
+        "'tier_capacities' not found in EAAC device spec");
+  return settings;
 }
 
 class LocalStagingPass
@@ -773,9 +814,9 @@ public:
   using LocalStagingBase::LocalStagingBase;
 
   void runOnOperation() override {
-    FailureOr<SmallVector<int64_t>> tierCapacities =
-        getEaacTierCapacities(getOperation());
-    if (failed(tierCapacities))
+    FailureOr<EaacTargetSettings> settings =
+        getEaacTargetSettings(getOperation());
+    if (failed(settings))
       return signalPassFailure();
 
     // Get lifetime analysis from the AnalysisManager
@@ -787,7 +828,8 @@ public:
       problem.add(interval);
     }
 
-    auto map = allocate(problem, *tierCapacities);
+    auto map = allocate(problem, settings->tierCapacities,
+                        settings->reuseGuard);
   }
 };
 
