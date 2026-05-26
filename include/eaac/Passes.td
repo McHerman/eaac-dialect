@@ -137,6 +137,35 @@ def FindAsyncDependency : Pass<"eaac-find-async-dependency", "mlir::ModuleOp"> {
   ];
 }
 
+def FindAliasDependency : Pass<"eaac-find-alias-dependency", "mlir::ModuleOp"> {
+  let summary = "Add async.token edges for allocator-induced memref aliases";
+  let description = [{
+    Runs after LocalStaging has annotated memref allocs with eaac.offset and
+    eaac.tier, and after FindAsyncDependency has wired SSA-level token edges.
+
+    LocalStaging's reuse_guard knob spreads addresses to avoid aliasing, but
+    when memory pressure forces address reuse, two SSA-distinct memrefs can
+    share the same physical {tier, offset} range. The single-writer invariant
+    that FindAsyncDependency relies on is broken at the physical level, so the
+    consumer of the new buffer can race against the last reader of the old
+    buffer.
+
+    This pass detects those alias pairs and adds async.token edges between the
+    relevant async.execute regions so that downstream lowering (InsertRequire,
+    LowerAsyncToSemaphore) materializes a hardware semaphore chain.
+
+    Edges that are already implied by transitive ordering in the existing
+    token graph are skipped. Anti-deps that span more than the architectural
+    sync window (DLTI "max_sync_window") fall back to a fence (TODO).
+  }];
+  let constructor = "mlir::eaac::createFindAliasDependencyPass()";
+
+  let dependentDialects = [
+    "mlir::async::AsyncDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 def InsertRequire : Pass<"eaac-insert-require", "mlir::ModuleOp"> {
   let summary = "Insert eaac.require ops to pair async tokens with memrefs";
   let description = [{
