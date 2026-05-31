@@ -16,12 +16,15 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+
+#include <limits>
 
 #define DEBUG_TYPE "find-alias-dependency"
 
@@ -99,6 +102,138 @@ static bool transitivelyOrdered(
 }
 
 //===----------------------------------------------------------------------===//
+// Allocation records
+//===----------------------------------------------------------------------===//
+
+/// One memref allocation as seen by this pass after LocalStaging has assigned
+/// physical addresses. `op` is the SSA producer (typically memref.alloc), and
+/// `memref` is its result Value — kept so we can later find readers/writers
+/// via getUsers() without re-walking from `op`.
+struct Alloc {
+  Operation *op;
+  Value memref;
+  int64_t tier;
+  int64_t offset;
+  int64_t size; // bytes
+  int64_t time; // opTime[op]
+};
+
+/// Compute the byte size of a statically-shaped MemRefType.
+/// Mirrors the calculation in MemRefLivenessAnalysis; if/when both grow more
+/// users this should move into a shared header.
+static int64_t bytesOf(MemRefType memrefType) {
+  int64_t elementBytes =
+      memrefType.getElementType().getIntOrFloatBitWidth() / 8;
+  int64_t numElements = 1;
+  for (int64_t dim : memrefType.getShape()) {
+    if (dim != ShapedType::kDynamic)
+      numElements *= dim;
+  }
+  return numElements * elementBytes;
+}
+
+/// Collect every memref-producing op in `funcOp` that carries both
+/// `eaac.offset` and `eaac.tier`, returning the records sorted by
+/// (tier, time) so same-tier allocations are contiguous in temporal order.
+static llvm::SmallVector<Alloc>
+collectAllocs(func::FuncOp funcOp,
+              const llvm::DenseMap<Operation *, int64_t> &opTime) {
+  llvm::SmallVector<Alloc> allocs;
+  funcOp.walk([&](Operation *op) {
+    for (Value result : op->getResults()) {
+      auto memrefType = dyn_cast<MemRefType>(result.getType());
+      if (!memrefType)
+        continue;
+      auto offsetAttr = op->getAttrOfType<IntegerAttr>("eaac.offset");
+      auto tierAttr = op->getAttrOfType<IntegerAttr>("eaac.tier");
+      if (!offsetAttr || !tierAttr)
+        break; // not an EAAC-allocated memref; skip the whole op
+      allocs.push_back({op, result, tierAttr.getInt(), offsetAttr.getInt(),
+                        bytesOf(memrefType), opTime.lookup(op)});
+      break; // one record per op even if it has multiple memref results
+    }
+  });
+  llvm::sort(allocs, [](const Alloc &a, const Alloc &b) {
+    return std::tie(a.tier, a.time) < std::tie(b.tier, b.time);
+  });
+  return allocs;
+}
+
+//===----------------------------------------------------------------------===//
+// Async.execute lookups
+//===----------------------------------------------------------------------===//
+
+/// Walk parent ops to find the enclosing async.execute, if any.
+static async::ExecuteOp enclosingExecute(Operation *op) {
+  while (op && !isa<async::ExecuteOp>(op))
+    op = op->getParentOp();
+  return op ? cast<async::ExecuteOp>(op) : nullptr;
+}
+
+/// True iff `op` declares a value-bound Write effect on `memref`. Mirrors the
+/// helper in FindAsyncDependency.cpp; if it grows a third user, lift to a
+/// shared header.
+static bool writesTo(Operation *op, Value memref) {
+  auto effectOp = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effectOp)
+    return false;
+  llvm::SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>> effects;
+  effectOp.getEffects(effects);
+  for (auto &effect : effects) {
+    if (!isa<MemoryEffects::Write>(effect.getEffect()))
+      continue;
+    if (effect.getValue() == memref)
+      return true;
+  }
+  return false;
+}
+
+/// async.execute with the largest op-time that has any user of `memref` in
+/// its body. Used as the "last access" endpoint of the older buffer in an
+/// alias pair. Returns nullptr if no such execute exists (e.g. memref was
+/// allocated but never accessed inside an async.execute).
+static async::ExecuteOp
+lastAccessor(Value memref,
+             const llvm::DenseMap<Operation *, int64_t> &opTime) {
+  async::ExecuteOp best = nullptr;
+  int64_t bestTime = -1;
+  for (Operation *user : memref.getUsers()) {
+    async::ExecuteOp exec = enclosingExecute(user);
+    if (!exec)
+      continue;
+    int64_t t = opTime.lookup(exec);
+    if (t > bestTime) {
+      bestTime = t;
+      best = exec;
+    }
+  }
+  return best;
+}
+
+/// async.execute with the smallest op-time whose body contains a write
+/// effect on `memref`. Used as the "first write" endpoint of the newer
+/// buffer in an alias pair. Returns nullptr if nothing writes `memref`.
+static async::ExecuteOp
+firstWriter(Value memref,
+            const llvm::DenseMap<Operation *, int64_t> &opTime) {
+  async::ExecuteOp best = nullptr;
+  int64_t bestTime = std::numeric_limits<int64_t>::max();
+  for (Operation *user : memref.getUsers()) {
+    if (!writesTo(user, memref))
+      continue;
+    async::ExecuteOp exec = enclosingExecute(user);
+    if (!exec)
+      continue;
+    int64_t t = opTime.lookup(exec);
+    if (t < bestTime) {
+      bestTime = t;
+      best = exec;
+    }
+  }
+  return best;
+}
+
+//===----------------------------------------------------------------------===//
 // Pass
 //===----------------------------------------------------------------------===//
 
@@ -115,25 +250,55 @@ public:
 private:
   void processFunction(func::FuncOp funcOp) {
     llvm::DenseMap<Operation *, int64_t> opTime = buildOpTimeMap(funcOp);
+    llvm::SmallVector<Alloc> allocs = collectAllocs(funcOp, opTime);
 
-    // TODO: detect alias pairs from eaac.offset / eaac.tier / size + lifespans
-    //       and emit token edges for the ones not transitively ordered.
-    //
-    // Sketch:
-    //   1. Collect every memref-defining op carrying eaac.offset + eaac.tier.
-    //   2. Group by tier; sort by op-time.
-    //   3. For each pair (A, B) with A before B in op-time, same tier, and
-    //      overlapping [offset, offset+size) ranges:
-    //        a. Find lastReader(A) and firstWriter(B) as async.execute ops.
-    //        b. If transitivelyOrdered(firstWriter(B), lastReader(A), opTime)
-    //           → skip (already covered).
-    //        c. Else if op_time(firstWriter(B)) - op_time(lastReader(A)) > W
-    //           → emit a fence at firstWriter(B) (TODO: fence op).
-    //        d. Otherwise append lastReader(A)'s token to firstWriter(B)'s
-    //           dependency list (rebuild the async.execute op since its
-    //           operand list is part of its construction).
-    (void)opTime;
-    (void)funcOp;
+    LLVM_DEBUG({
+      llvm::dbgs() << "[find-alias-dep] " << allocs.size()
+                   << " EAAC-allocated memrefs in @"
+                   << funcOp.getSymName() << "\n";
+      for (const Alloc &a : allocs)
+        llvm::dbgs() << "  tier=" << a.tier << " offset=" << a.offset
+                     << " size=" << a.size << " time=" << a.time << "\n";
+    });
+
+    // Scan same-tier adjacent allocations for overlapping address ranges.
+    // `allocs` is sorted by (tier, time), so the inner range starts after A
+    // and terminates as soon as we leave A's tier.
+    for (auto [i, a] : llvm::enumerate(allocs)) {
+      const int64_t aHi = a.offset + a.size;
+      for (const Alloc &b : llvm::ArrayRef(allocs).drop_front(i + 1)) {
+        if (b.tier != a.tier)
+          break;
+        const int64_t bHi = b.offset + b.size;
+        if (b.offset >= aHi || a.offset >= bHi)
+          continue; // address ranges are disjoint
+
+        // a is earlier than b in op-time (sort order). The anti-dep we want
+        // is: firstWriter(b) must wait for lastAccessor(a).
+        async::ExecuteOp reader = lastAccessor(a.memref, opTime);
+        async::ExecuteOp writer = firstWriter(b.memref, opTime);
+        if (!reader || !writer)
+          continue; // nothing to chain to
+
+        const bool covered = transitivelyOrdered(writer, reader, opTime);
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "[alias] tier=" << a.tier
+                       << " A.offset=" << a.offset
+                       << " B.offset=" << b.offset
+                       << " lastAccessor(A)@" << opTime.lookup(reader)
+                       << " firstWriter(B)@" << opTime.lookup(writer)
+                       << (covered ? " (already ordered)\n"
+                                   : " NEEDS EDGE\n");
+        });
+
+        // TODO: if !covered, emit token edge writer -> reader; if the
+        // distance exceeds the architectural sync window, fall back to a
+        // fence. See FindAsyncDependency::rewriteWithDeps for the rebuild
+        // pattern.
+        (void)covered;
+      }
+    }
   }
 };
 
