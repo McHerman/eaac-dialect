@@ -14,6 +14,7 @@
 #include "eaac/Passes.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -25,6 +26,7 @@
 #include "llvm/Support/Debug.h"
 
 #include <limits>
+#include <optional>
 
 #define DEBUG_TYPE "find-alias-dependency"
 
@@ -234,6 +236,39 @@ firstWriter(Value memref,
 }
 
 //===----------------------------------------------------------------------===//
+// DLTI lookup
+//===----------------------------------------------------------------------===//
+
+/// Read `alias_check_length` from the EAAC device entry of the module's
+/// `dlti.target_system_spec`. Returns nullopt if either the spec or the key
+/// is absent — the pass then runs with no time-window filter, i.e. checks
+/// every aliasing pair regardless of their op-time distance.
+static std::optional<int64_t> getEaacAliasCheckLength(ModuleOp module) {
+  auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
+      module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
+  if (!sysSpec)
+    return std::nullopt;
+  auto deviceId = StringAttr::get(module.getContext(), "EAAC");
+  std::optional<TargetDeviceSpecInterface> deviceSpec =
+      sysSpec.getDeviceSpecForDeviceID(deviceId);
+  if (!deviceSpec)
+    return std::nullopt;
+  for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
+    auto key = dyn_cast<StringAttr>(entry.getKey());
+    if (!key || key.getValue() != "alias_check_length")
+      continue;
+    auto intAttr = dyn_cast<IntegerAttr>(entry.getValue());
+    if (!intAttr) {
+      module.emitWarning() << "'alias_check_length': expected i64, got "
+                           << entry.getValue() << "; ignoring";
+      return std::nullopt;
+    }
+    return intAttr.getInt();
+  }
+  return std::nullopt;
+}
+
+//===----------------------------------------------------------------------===//
 // Pass
 //===----------------------------------------------------------------------===//
 
@@ -244,11 +279,23 @@ public:
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    module.walk([&](func::FuncOp funcOp) { processFunction(funcOp); });
+    std::optional<int64_t> aliasCheckLength = getEaacAliasCheckLength(module);
+    LLVM_DEBUG({
+      if (aliasCheckLength)
+        llvm::dbgs() << "[find-alias-dep] alias_check_length="
+                     << *aliasCheckLength << "\n";
+      else
+        llvm::dbgs() << "[find-alias-dep] alias_check_length unset; "
+                        "checking every pair\n";
+    });
+    module.walk([&](func::FuncOp funcOp) {
+      processFunction(funcOp, aliasCheckLength);
+    });
   }
 
 private:
-  void processFunction(func::FuncOp funcOp) {
+  void processFunction(func::FuncOp funcOp,
+                       std::optional<int64_t> aliasCheckLength) {
     llvm::DenseMap<Operation *, int64_t> opTime = buildOpTimeMap(funcOp);
     llvm::SmallVector<Alloc> allocs = collectAllocs(funcOp, opTime);
 
@@ -263,12 +310,15 @@ private:
 
     // Scan same-tier adjacent allocations for overlapping address ranges.
     // `allocs` is sorted by (tier, time), so the inner range starts after A
-    // and terminates as soon as we leave A's tier.
+    // and terminates as soon as we leave A's tier — or, if a time-window
+    // filter is set, as soon as B's op-time pulls beyond the window.
     for (auto [i, a] : llvm::enumerate(allocs)) {
       const int64_t aHi = a.offset + a.size;
       for (const Alloc &b : llvm::ArrayRef(allocs).drop_front(i + 1)) {
         if (b.tier != a.tier)
           break;
+        if (aliasCheckLength && (b.time - a.time) > *aliasCheckLength)
+          break; // sorted by time within tier; later b's exceed the window
         const int64_t bHi = b.offset + b.size;
         if (b.offset >= aHi || a.offset >= bHi)
           continue; // address ranges are disjoint

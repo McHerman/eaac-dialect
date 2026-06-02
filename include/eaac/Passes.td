@@ -155,8 +155,10 @@ def FindAliasDependency : Pass<"eaac-find-alias-dependency", "mlir::ModuleOp"> {
     LowerAsyncToSemaphore) materializes a hardware semaphore chain.
 
     Edges that are already implied by transitive ordering in the existing
-    token graph are skipped. Anti-deps that span more than the architectural
-    sync window (DLTI "max_sync_window") fall back to a fence (TODO).
+    token graph are skipped. The DLTI key "alias_check_length" bounds the
+    op-time distance at which alias pairs are still considered; pairs whose
+    time gap exceeds the window are ignored (and will fall back to a fence
+    once fence insertion lands).
   }];
   let constructor = "mlir::eaac::createFindAliasDependencyPass()";
 
