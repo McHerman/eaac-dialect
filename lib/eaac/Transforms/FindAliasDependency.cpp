@@ -289,13 +289,44 @@ public:
                         "checking every pair\n";
     });
     module.walk([&](func::FuncOp funcOp) {
-      processFunction(funcOp, aliasCheckLength);
+      auto pairs = collectAliasPairs(funcOp, aliasCheckLength);
+      LLVM_DEBUG({
+        llvm::dbgs() << "[find-alias-dep] " << pairs.size()
+                     << " alias pairs in @" << funcOp.getSymName() << "\n";
+        for (auto [reader, writer] : pairs)
+          llvm::dbgs() << "  reader=" << reader << " writer=" << writer
+                       << "\n";
+      });
+      for (auto [readerExec, writerExec] : pairs) {
+        // readerExec : async.execute wrapping the last access of the older
+        //              buffer (the predecessor on the aliased address).
+        // writerExec : async.execute wrapping the first write of the newer
+        //              buffer (the successor that overwrites the address).
+
+
+        OpBuilder builder(writerExec.getBody(), writerExec.getBody()->begin());
+          ChainOp::create(builder, writerExec.getLoc(), readerExec.getToken());
+
+        //(void)readerExec;
+      }
     });
   }
 
 private:
-  void processFunction(func::FuncOp funcOp,
-                       std::optional<int64_t> aliasCheckLength) {
+  /// A reader/writer pair on aliased addresses. `reader` is the async.execute
+  /// whose body holds the last access of the older buffer; `writer` is the
+  /// async.execute whose body holds the first write to the newer buffer that
+  /// will physically overwrite the older one.
+  using AliasPair = std::pair<async::ExecuteOp, async::ExecuteOp>;
+
+  /// Walk `funcOp` and return every pair of async.executes whose memrefs
+  /// share an {tier, [offset, offset+size)} range and are not already
+  /// transitively ordered by the existing async.token graph. The list is
+  /// filtered by the DLTI `alias_check_length` window when provided.
+  llvm::SmallVector<AliasPair>
+  collectAliasPairs(func::FuncOp funcOp,
+                    std::optional<int64_t> aliasCheckLength) {
+    llvm::SmallVector<AliasPair> pairs;
     llvm::DenseMap<Operation *, int64_t> opTime = buildOpTimeMap(funcOp);
     llvm::SmallVector<Alloc> allocs = collectAllocs(funcOp, opTime);
 
@@ -330,25 +361,13 @@ private:
         if (!reader || !writer)
           continue; // nothing to chain to
 
-        const bool covered = transitivelyOrdered(writer, reader, opTime);
+        if (transitivelyOrdered(writer, reader, opTime))
+          continue; // already covered by the existing token graph
 
-        LLVM_DEBUG({
-          llvm::dbgs() << "[alias] tier=" << a.tier
-                       << " A.offset=" << a.offset
-                       << " B.offset=" << b.offset
-                       << " lastAccessor(A)@" << opTime.lookup(reader)
-                       << " firstWriter(B)@" << opTime.lookup(writer)
-                       << (covered ? " (already ordered)\n"
-                                   : " NEEDS EDGE\n");
-        });
-
-        // TODO: if !covered, emit token edge writer -> reader; if the
-        // distance exceeds the architectural sync window, fall back to a
-        // fence. See FindAsyncDependency::rewriteWithDeps for the rebuild
-        // pattern.
-        (void)covered;
+        pairs.emplace_back(reader, writer);
       }
     }
+    return pairs;
   }
 };
 

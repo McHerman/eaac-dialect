@@ -120,17 +120,26 @@ def SemAllocOp : EAAC_Op<"sem_alloc", [
     For unbounded buffers: empty_count = large value, full_count = 0.
     For bounded buffers:   empty_count = N,           full_count = 0.
 
+    Optional `chains_from` operands list other semaphores whose completion
+    this allocation must wait for before it is initialized — used to express
+    allocator-induced anti-aliasing dependencies. This keeps initialization
+    constraints (sem_alloc) separated from use-site constraints (sem_acquire
+    / sem_require).
+
     Example:
     ```mlir
-    %sem = eaac.sem_alloc(%empty, %full) : index
+    %sem = eaac.sem_alloc(%empty, %full)
+    %sem = eaac.sem_alloc(%empty, %full) chains_from(%sem_prev, %sem_other)
     ```
   }];
 
-  let arguments = (ins Index:$empty_count, Index:$full_count);
+  let arguments = (ins Index:$empty_count, Index:$full_count,
+                       Variadic<EAAC_SemaphoreType>:$chains_from);
   let results = (outs EAAC_SemaphoreType:$semaphore);
 
   let assemblyFormat = [{
-    `(` $empty_count `,` $full_count `)` attr-dict
+    `(` $empty_count `,` $full_count `)`
+    (`chains_from` `(` $chains_from^ `)`)? attr-dict
   }];
 }
 
@@ -196,17 +205,25 @@ def SemRequireOp : EAAC_Op<"sem_require", [
     Declares that `memref` is guarded by `semaphore` for producer-consumer
     synchronization. Returns the same memref as a new SSA value.
 
+    Optional `chains_from` operands list other semaphores whose completion
+    this require must wait for at initialization time, used to express
+    allocator-induced anti-aliasing dependencies.
+
     Example:
     ```mlir
     %ready = eaac.sem_require %sem, %buf : memref<128x128xi8>
+    %ready = eaac.sem_require %sem, %buf chains_from(%sem_a, %sem_b)
+                                                          : memref<128x128xi8>
     ```
   }];
 
-  let arguments = (ins EAAC_SemaphoreType:$semaphore, AnyMemRef:$memref);
+  let arguments = (ins EAAC_SemaphoreType:$semaphore, AnyMemRef:$memref,
+                       Variadic<EAAC_SemaphoreType>:$chains_from);
   let results = (outs AnyMemRef:$result);
 
   let assemblyFormat = [{
-    $semaphore `,` $memref attr-dict `:` type($memref)
+    $semaphore `,` $memref (`chains_from` `(` $chains_from^ `)`)?
+    attr-dict `:` type($memref)
   }];
 }
 
@@ -224,6 +241,9 @@ def SemAcquireOp : EAAC_Op<"sem_acquire", [
 
     This is the producer-side counterpart to `eaac.sem_require`, which is
     the consumer-side wait.
+
+    Anti-aliasing chains live on `eaac.sem_alloc` (initialization-time
+    constraints), not here.
 
     Example:
     ```mlir
@@ -265,6 +285,43 @@ def RequireOp : EAAC_Op<"require", [
 
   let assemblyFormat = [{
     $token `,` $memref attr-dict `:` type($memref)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// ChainOp - Anti-aliasing dependency marker embedded in an async.execute body
+//===----------------------------------------------------------------------===//
+
+def ChainOp : EAAC_Op<"chain"> {
+  let summary = "Anti-aliasing dependency embedded in an async.execute body";
+  let description = [{
+    Embedded inside an `async.execute` body. Declares that the enclosing
+    producer must wait for `predecessor` (an `async.token` from another
+    `async.execute`) to fully complete before claiming its output slot.
+    Used to express allocator-induced anti-aliasing dependencies that
+    aren't part of the value-flow graph.
+
+    `LowerAsyncToSemaphore` consumes this op: `predecessor` is resolved to
+    the corresponding semaphore and appended to the enclosing producer's
+    `eaac.sem_acquire chains_from(...)` list, then this op is erased.
+
+    The op has no result and intentionally implements no memory effects
+    interface so it is preserved through the standard DCE / canonicalization
+    passes until the lowering pass consumes it.
+
+    Example:
+    ```mlir
+    %tok_b = async.execute(%data_dep) {
+      eaac.chain %tok_a    // producer waits for tok_a at init time
+      // ...body...
+    }
+    ```
+  }];
+
+  let arguments = (ins Async_TokenType:$predecessor);
+
+  let assemblyFormat = [{
+    $predecessor attr-dict
   }];
 }
 

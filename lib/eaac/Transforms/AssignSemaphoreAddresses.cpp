@@ -128,29 +128,93 @@ private:
     llvm::SmallVector<SemInterval> intervals;
     llvm::DenseMap<Value, size_t> semToIdx;
 
+
     // Collect all sem_alloc ops.
+    /*
     funcOp.walk([&](SemAllocOp allocOp) {
       SemInterval interval;
       interval.semaphore = allocOp.getSemaphore();
       interval.allocOp = allocOp;
       interval.start = opNumbers.lookup(allocOp);
       interval.end = interval.start;
+
       if (auto ch = channelAnalysis.getAssignment(allocOp.getSemaphore())) {
         interval.channelName = ch->name;
         interval.channelDepth = ch->depth;
         interval.channelIdx = ch->index;
       }
+
       semToIdx[allocOp.getSemaphore()] = intervals.size();
       intervals.push_back(interval);
     });
+    */
+
+    // Per-semaphore extended end times produced by chain dependencies.
+    // Populated below as we walk sem_allocs; consumed by the dealloc loop.
+    llvm::DenseMap<Value, int64_t> chainedSemIntervalEnd;
+
+    llvm::SmallVector<eaac::SemAllocOp> semAllocOps;
+    funcOp.walk([&](eaac::SemAllocOp op) { semAllocOps.push_back(op); });
+
+    for (eaac::SemAllocOp semAllocOp : semAllocOps) {
+      SemInterval interval;
+      interval.semaphore = semAllocOp.getSemaphore();
+      interval.allocOp = semAllocOp;
+      interval.start = opNumbers.lookup(semAllocOp);
+      interval.end = interval.start;
+
+      if (auto ch = channelAnalysis.getAssignment(semAllocOp.getSemaphore())) {
+        interval.channelName = ch->name;
+        interval.channelDepth = ch->depth;
+        interval.channelIdx = ch->index;
+      }
+
+      semToIdx[semAllocOp.getSemaphore()] = intervals.size();
+
+      const int64_t allocTime = opNumbers.lookup(semAllocOp);
+      for (Value chainedSem : semAllocOp.getChainsFrom()) {
+        if (auto predAllocOp = chainedSem.getDefiningOp<eaac::SemAllocOp>()) {
+          // Bump the predecessor's required end to at least this alloc's
+          // start (its address must remain reserved until this alloc fires).
+          auto [it, inserted] = chainedSemIntervalEnd.try_emplace(
+              predAllocOp.getSemaphore(), allocTime + 1);
+          if (!inserted)
+            it->second = std::max(it->second, allocTime + 1);
+          LLVM_DEBUG(llvm::dbgs()
+                     << "[chain] extend pred sem live-range to "
+                     << it->second
+                     << " (chained from alloc @" << interval.start << ")\n");
+        }
+      }
+
+      intervals.push_back(interval);
+    }
+
+
 
     // Find sem_dealloc ops to set interval ends.
     funcOp.walk([&](SemDeallocOp deallocOp) {
       Value sem = deallocOp.getSemaphore();
       auto it = semToIdx.find(sem);
-      if (it != semToIdx.end()) {
-        intervals[it->second].deallocOp = deallocOp;
-        intervals[it->second].end = opNumbers.lookup(deallocOp);
+      if (it == semToIdx.end()) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[warn] sem_dealloc has no matching sem_alloc interval\n");
+        return;
+      }
+
+      intervals[it->second].deallocOp = deallocOp;
+      const int64_t natural = opNumbers.lookup(deallocOp);
+
+      auto extendedIt = chainedSemIntervalEnd.find(sem);
+      if (extendedIt != chainedSemIntervalEnd.end() &&
+          extendedIt->second > natural) {
+        intervals[it->second].end = extendedIt->second;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[chain] sem @" << intervals[it->second].start
+                   << " end extended to " << intervals[it->second].end
+                   << " past natural sem_dealloc (chain target)\n");
+      } else {
+        intervals[it->second].end = natural;
       }
     });
 
