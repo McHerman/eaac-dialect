@@ -127,6 +127,15 @@ static uint16_t getSemAddress(Value semaphore) {
   return 0;
 }
 
+/// Resolve a list of chains_from operands into their hardware addresses.
+static std::vector<uint16_t> getChainAddresses(ValueRange chains) {
+  std::vector<uint16_t> addrs;
+  addrs.reserve(chains.size());
+  for (Value c : chains)
+    addrs.push_back(getSemAddress(c));
+  return addrs;
+}
+
 /// Try to extract a constant index value from an SSA value.
 static uint32_t getConstantIndex(Value val) {
   if (auto constOp = val.getDefiningOp<arith::ConstantIndexOp>())
@@ -158,8 +167,9 @@ serializeExecute(flatbuffers::FlatBufferBuilder &builder, ExecuteOp execOp,
           builder, getSemAddress(acqOp.getSemaphore()), bufId));
     } else if (auto reqOp = dyn_cast<SemRequireOp>(op)) {
       uint32_t bufId = buffers.getOrAssign(reqOp.getMemref());
-      semRequires.push_back(fb::CreateSemDep(
-          builder, getSemAddress(reqOp.getSemaphore()), bufId));
+      auto chainAddrs = getChainAddresses(reqOp.getChainsFrom());
+      semRequires.push_back(fb::CreateSemDepDirect(
+          builder, getSemAddress(reqOp.getSemaphore()), bufId, &chainAddrs));
     } else if (auto dmaOp = dyn_cast<DmaStartOp>(op)) {
       uint32_t src = buffers.getOrAssign(dmaOp.getSrc());
       uint32_t dst = buffers.getOrAssign(dmaOp.getDst());
@@ -206,7 +216,9 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
           maxSemAddr = addr + 1;
         uint32_t emptyCnt = getConstantIndex(semAlloc.getEmptyCount());
         uint32_t fullCnt = getConstantIndex(semAlloc.getFullCount());
-        auto sa = fb::CreateSemAlloc(builder, addr, emptyCnt, fullCnt);
+        auto chainAddrs = getChainAddresses(semAlloc.getChainsFrom());
+        auto sa = fb::CreateSemAllocDirect(builder, addr, emptyCnt, fullCnt,
+                                           &chainAddrs);
         ops.push_back(fb::CreateOperation(builder, fb::Command_SemAlloc,
                                           sa.Union()));
       // SemDealloc is intentionally not emitted: with fresh-address-first

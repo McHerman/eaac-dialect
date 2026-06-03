@@ -48,6 +48,10 @@ table SemAlloc {
   empty_count: uint32;
   /// Initial full count.
   full_count: uint32;
+  /// Anti-aliasing chains: other hardware semaphore addresses whose
+  /// completion this allocation must wait for before initializing.
+  /// Empty for ordinary allocations.
+  chain_addresses: [uint16];
 }
 
 /// Release a hardware semaphore pair.
@@ -63,6 +67,10 @@ table SemDep {
   sem_address: uint16;
   /// Index into the enclosing Function.buffers table.
   buffer_id: uint32;
+  /// Anti-aliasing chains: other hardware semaphore addresses whose
+  /// completion this dependency must wait for at initialization time.
+  /// Empty for ordinary data dependencies.
+  chain_addresses: [uint16];
 }
 
 /// An asynchronous DMA transfer operation.
