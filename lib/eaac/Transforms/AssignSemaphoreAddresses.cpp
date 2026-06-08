@@ -40,6 +40,7 @@ struct SemInterval {
   int64_t start;        // Op number of sem_alloc
   int64_t end;          // Op number of sem_dealloc
   int64_t address;      // Assigned hardware address (-1 = unassigned)
+  int64_t generation;   // Per-address generation tag (wraps mod num_generations)
   bool reused;          // True if this reuses an address from a live semaphore
   // Channel binding (from StreamingChannelAnalysis). When set, the semaphore
   // rotates through its channel's pre-reserved ring instead of going through
@@ -51,7 +52,7 @@ struct SemInterval {
 
   SemInterval()
       : allocOp(nullptr), deallocOp(nullptr), start(0), end(0), address(-1),
-        reused(false) {}
+        generation(0), reused(false) {}
 
   bool operator<(const SemInterval &other) const { return start < other.start; }
 };
@@ -60,9 +61,9 @@ struct SemInterval {
 // Pass
 //===----------------------------------------------------------------------===//
 
-/// Look up `num_semaphore_pairs` on the EAAC device entry of the module's
+/// Look up an integer entry by `key` on the EAAC device entry of the module's
 /// `dlti.target_system_spec`. The spec is mandatory.
-static FailureOr<int64_t> getEaacNumSemaphorePairs(ModuleOp module) {
+static FailureOr<int64_t> getEaacIntegerEntry(ModuleOp module, StringRef key) {
   auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
       module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
   if (!sysSpec)
@@ -76,17 +77,24 @@ static FailureOr<int64_t> getEaacNumSemaphorePairs(ModuleOp module) {
         "missing 'EAAC' device entry in 'dlti.target_system_spec'");
 
   for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
-    auto key = dyn_cast<StringAttr>(entry.getKey());
-    if (!key || key.getValue() != "num_semaphore_pairs")
+    auto entryKey = dyn_cast<StringAttr>(entry.getKey());
+    if (!entryKey || entryKey.getValue() != key)
       continue;
     auto i = dyn_cast<IntegerAttr>(entry.getValue());
     if (!i)
-      return module.emitError("'num_semaphore_pairs': expected integer, got ")
-             << entry.getValue();
+      return module.emitError("'") << key << "': expected integer, got "
+                                   << entry.getValue();
     return i.getInt();
   }
-  return module.emitError(
-      "'num_semaphore_pairs' not found in EAAC device spec");
+  return module.emitError("'") << key << "' not found in EAAC device spec";
+}
+
+static FailureOr<int64_t> getEaacNumSemaphorePairs(ModuleOp module) {
+  return getEaacIntegerEntry(module, "num_semaphore_pairs");
+}
+
+static FailureOr<int64_t> getEaacNumSemaphoreGenerations(ModuleOp module) {
+  return getEaacIntegerEntry(module, "num_semaphore_generations");
 }
 
 class AssignSemaphoreAddressesPass
@@ -99,11 +107,19 @@ public:
     FailureOr<int64_t> numPairs = getEaacNumSemaphorePairs(module);
     if (failed(numPairs))
       return signalPassFailure();
+    FailureOr<int64_t> numGenerations = getEaacNumSemaphoreGenerations(module);
+    if (failed(numGenerations))
+      return signalPassFailure();
+    if (*numGenerations <= 0) {
+      module.emitError("'num_semaphore_generations' must be > 0");
+      return signalPassFailure();
+    }
 
     auto &channelAnalysis = getAnalysis<StreamingChannelAnalysis>();
 
     auto result = module.walk([&](func::FuncOp funcOp) -> WalkResult {
-      if (failed(processFunction(funcOp, *numPairs, channelAnalysis)))
+      if (failed(processFunction(funcOp, *numPairs, *numGenerations,
+                                 channelAnalysis)))
         return WalkResult::interrupt();
       return WalkResult::advance();
     });
@@ -243,7 +259,17 @@ private:
   /// linear scan against `[0, scanCap)`. The pools are disjoint so the linear
   /// scan never observes ring-occupied addresses.
   LogicalResult allocate(llvm::SmallVector<SemInterval> &intervals,
-                         int64_t numPairs) {
+                         int64_t numPairs, int64_t numGenerations) {
+    // Per-hardware-address generation counter. Each time an address is
+    // assigned to a sem_alloc, that address's counter advances; the resulting
+    // tag is written onto the interval and wraps modulo numGenerations.
+    llvm::DenseMap<int64_t, int64_t> nextGeneration;
+    auto takeGeneration = [&](int64_t addr) {
+      int64_t &counter = nextGeneration[addr];
+      int64_t gen = counter % numGenerations;
+      counter++;
+      return gen;
+    };
     // Discover the channels actually used in this function (subset of what
     // the analysis surfaced module-wide), then reserve a ring per channel at
     // the top of the address space. Sort by name for deterministic layout.
@@ -286,10 +312,12 @@ private:
       const int64_t base = channelBase[iv.channelName];
       iv.address = base + (iv.channelIdx % iv.channelDepth);
       iv.reused = iv.channelIdx >= iv.channelDepth;
+      iv.generation = takeGeneration(iv.address);
       LLVM_DEBUG(llvm::dbgs()
                  << "  channel-ring(" << iv.channelName
-                 << "): addr=" << iv.address << " for sem @" << iv.start
-                 << "-" << iv.end << " (idx=" << iv.channelIdx << ")\n");
+                 << "): addr=" << iv.address << " gen=" << iv.generation
+                 << " for sem @" << iv.start << "-" << iv.end
+                 << " (idx=" << iv.channelIdx << ")\n");
     }
 
     llvm::SmallVector<SemInterval *> active;
@@ -336,9 +364,11 @@ private:
 
       if (freeAddr >= 0) {
         cur.address = freeAddr;
+        cur.generation = takeGeneration(freeAddr);
         lastEnd[freeAddr] = cur.end;
         active.push_back(&cur);
-        LLVM_DEBUG(llvm::dbgs() << "  assigned addr=" << freeAddr << " to sem @"
+        LLVM_DEBUG(llvm::dbgs() << "  assigned addr=" << freeAddr
+                                << " gen=" << cur.generation << " to sem @"
                                 << cur.start << "-" << cur.end << "\n");
         continue;
       }
@@ -371,10 +401,12 @@ private:
       }
 
       cur.address = victim->address;
+      cur.generation = takeGeneration(cur.address);
       cur.reused = true;
 
       LLVM_DEBUG(llvm::dbgs()
-                 << "  REUSE: addr=" << cur.address << " from sem @"
+                 << "  REUSE: addr=" << cur.address
+                 << " gen=" << cur.generation << " from sem @"
                  << victim->start << "-" << victim->end << " for sem @"
                  << cur.start << "-" << cur.end << "\n");
 
@@ -439,6 +471,8 @@ private:
 
       op->setAttr("eaac.sem_addr",
                   IntegerAttr::get(IndexType::get(ctx), iv.address));
+      op->setAttr("eaac.sem_gen",
+                  IntegerAttr::get(IndexType::get(ctx), iv.generation));
 
       if (iv.onChannel()) {
         // Ring reuse is architecturally safe (drain pipeline guarantees the
@@ -454,6 +488,7 @@ private:
 
   LogicalResult
   processFunction(func::FuncOp funcOp, int64_t numPairs,
+                  int64_t numGenerations,
                   const StreamingChannelAnalysis &channelAnalysis) {
     elideRedundantChannelSemaphores(funcOp, channelAnalysis);
     auto opNumbers = numberOperations(funcOp);
@@ -462,7 +497,7 @@ private:
     if (intervals.empty())
       return success();
 
-    if (failed(allocate(intervals, numPairs)))
+    if (failed(allocate(intervals, numPairs, numGenerations)))
       return failure();
 
     annotateIR(intervals);

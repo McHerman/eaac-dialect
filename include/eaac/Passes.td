@@ -251,6 +251,10 @@ def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::Mo
 
     Annotates each eaac.sem_alloc with:
       - eaac.sem_addr: the assigned hardware address (index)
+      - eaac.sem_gen: per-address generation tag (wraps modulo the DLTI
+        entry `num_semaphore_generations`); successive allocations on the
+        same hardware address get distinct tags so the fabric can reject
+        stale signals from prior generations
       - eaac.sem_reused: unit attr if the address was reused from a live sem
   }];
   let constructor = "mlir::eaac::createAssignSemaphoreAddressesPass()";

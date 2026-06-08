@@ -127,6 +127,16 @@ static uint16_t getSemAddress(Value semaphore) {
   return 0;
 }
 
+/// Get the per-address generation tag of a sem_alloc via eaac.sem_gen.
+static uint16_t getSemGeneration(Value semaphore) {
+  auto allocOp = semaphore.getDefiningOp<SemAllocOp>();
+  if (!allocOp)
+    return 0;
+  if (auto attr = allocOp->getAttrOfType<IntegerAttr>("eaac.sem_gen"))
+    return attr.getInt();
+  return 0;
+}
+
 /// Resolve a list of chains_from operands into their hardware addresses.
 static std::vector<uint16_t> getChainAddresses(ValueRange chains) {
   std::vector<uint16_t> addrs;
@@ -163,13 +173,16 @@ serializeExecute(flatbuffers::FlatBufferBuilder &builder, ExecuteOp execOp,
   for (Operation &op : execOp.getBody().front()) {
     if (auto acqOp = dyn_cast<SemAcquireOp>(op)) {
       uint32_t bufId = buffers.getOrAssign(acqOp.getMemref());
-      acquires.push_back(fb::CreateSemDep(
-          builder, getSemAddress(acqOp.getSemaphore()), bufId));
+      acquires.push_back(fb::CreateSemDepDirect(
+          builder, getSemAddress(acqOp.getSemaphore()), bufId,
+          /*chain_addresses=*/nullptr,
+          getSemGeneration(acqOp.getSemaphore())));
     } else if (auto reqOp = dyn_cast<SemRequireOp>(op)) {
       uint32_t bufId = buffers.getOrAssign(reqOp.getMemref());
       auto chainAddrs = getChainAddresses(reqOp.getChainsFrom());
       semRequires.push_back(fb::CreateSemDepDirect(
-          builder, getSemAddress(reqOp.getSemaphore()), bufId, &chainAddrs));
+          builder, getSemAddress(reqOp.getSemaphore()), bufId, &chainAddrs,
+          getSemGeneration(reqOp.getSemaphore())));
     } else if (auto dmaOp = dyn_cast<DmaStartOp>(op)) {
       uint32_t src = buffers.getOrAssign(dmaOp.getSrc());
       uint32_t dst = buffers.getOrAssign(dmaOp.getDst());
@@ -217,8 +230,9 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
         uint32_t emptyCnt = getConstantIndex(semAlloc.getEmptyCount());
         uint32_t fullCnt = getConstantIndex(semAlloc.getFullCount());
         auto chainAddrs = getChainAddresses(semAlloc.getChainsFrom());
+        uint16_t generation = getSemGeneration(semAlloc.getSemaphore());
         auto sa = fb::CreateSemAllocDirect(builder, addr, emptyCnt, fullCnt,
-                                           &chainAddrs);
+                                           &chainAddrs, generation);
         ops.push_back(fb::CreateOperation(builder, fb::Command_SemAlloc,
                                           sa.Union()));
       // SemDealloc is intentionally not emitted: with fresh-address-first

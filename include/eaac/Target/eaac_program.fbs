@@ -52,6 +52,11 @@ table SemAlloc {
   /// completion this allocation must wait for before initializing.
   /// Empty for ordinary allocations.
   chain_addresses: [uint16];
+  /// Per-address generation tag. Successive SemAllocs on the same
+  /// `address` advance this counter (wrapping at the DLTI-configured
+  /// `num_semaphore_generations`), so the fabric can distinguish this
+  /// allocation from earlier and later occupants of the same slot.
+  generation: uint16;
 }
 
 /// Release a hardware semaphore pair.
@@ -71,6 +76,9 @@ table SemDep {
   /// completion this dependency must wait for at initialization time.
   /// Empty for ordinary data dependencies.
   chain_addresses: [uint16];
+  /// Generation tag of the SemAlloc this dependency targets. Lets the
+  /// fabric reject stale signals from an earlier occupant of the slot.
+  generation: uint16;
 }
 
 /// An asynchronous DMA transfer operation.
