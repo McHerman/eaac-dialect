@@ -46,6 +46,9 @@ std::unique_ptr<Pass> createFindAsyncDependencyPass();
 /// Creates pass that adds async.token edges for allocator-induced aliases
 std::unique_ptr<Pass> createFindAliasDependencyPass();
 
+/// Creates pass that corrects broadcast operations
+std::unique_ptr<Pass> createCorrectBroadcastPass();
+
 /// Creates pass to insert eaac.require ops pairing tokens with memrefs
 std::unique_ptr<Pass> createInsertRequirePass();
 

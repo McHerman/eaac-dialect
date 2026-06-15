@@ -8,6 +8,7 @@ add_mlir_library(EAACTransforms
   EncodeDependencies.cpp
   FindAsyncDependency.cpp
   FindAliasDependency.cpp
+  CorrectBroadcast.cpp
   InsertRequire.cpp
   LowerAsyncToSemaphore.cpp
   LinalgToEaac.cpp

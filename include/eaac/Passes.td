@@ -168,6 +168,19 @@ def FindAliasDependency : Pass<"eaac-find-alias-dependency", "mlir::ModuleOp"> {
   ];
 }
 
+def CorrectBroadcast : Pass<"eaac-correct-broadcast", "mlir::ModuleOp"> {
+  let summary = "TODO: one-line summary";
+  let description = [{
+    TODO: longer description.
+  }];
+  let constructor = "mlir::eaac::createCorrectBroadcastPass()";
+
+  let dependentDialects = [
+    "mlir::async::AsyncDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 def InsertRequire : Pass<"eaac-insert-require", "mlir::ModuleOp"> {
   let summary = "Insert eaac.require ops to pair async tokens with memrefs";
   let description = [{
