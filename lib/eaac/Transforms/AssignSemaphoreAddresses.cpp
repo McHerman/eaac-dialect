@@ -444,13 +444,51 @@ private:
     }
 
     // Sweep orphaned sem_allocs (and their sem_acquire / sem_dealloc).
+    // A sem is sweepable iff every non-acquire/dealloc user is another
+    // SemAllocOp carrying it in `chains_from`. SemRequireOp (or anything
+    // else unexpected) means the semaphore is still load-bearing and we
+    // skip it. The orphan sweep is correctness-required: the assembler
+    // links every generation N to N+1 on the same address, so a surviving
+    // orphan whose signal never fires would deadlock the next generation.
+    //
+    // Dropping the chain edge when we sweep the chain target is safe
+    // because the only orphans we sweep are sems whose consumer waits were
+    // elided by `elideRedundantChannelSemaphores`, which already proved
+    // those producers/consumers are queue-serialized at the FU level. The
+    // chain existed as anti-aliasing protection — that protection is
+    // redundant once we've established queue order.
     llvm::SmallVector<SemAllocOp> allocs;
     funcOp.walk([&](SemAllocOp a) { allocs.push_back(a); });
     for (SemAllocOp alloc : allocs) {
       Value sem = alloc.getSemaphore();
-      if (llvm::any_of(sem.getUsers(),
-                       [](Operation *u) { return isa<SemRequireOp>(u); }))
+      bool sweepable = true;
+      llvm::SmallVector<SemAllocOp> chainUsers;
+      for (Operation *u : sem.getUsers()) {
+        if (isa<SemAcquireOp, SemDeallocOp>(u))
+          continue;
+        if (auto chainUser = dyn_cast<SemAllocOp>(u)) {
+          chainUsers.push_back(chainUser);
+          continue;
+        }
+        sweepable = false;
+        break;
+      }
+      if (!sweepable)
         continue;
+
+      // Drop this sem from each chain user's chains_from operand list.
+      // Iterate indices high-to-low so the erases don't shift positions
+      // we still need to examine. With only one variadic on SemAllocOp
+      // there's no operand-segment-sizes attribute to update.
+      for (SemAllocOp chainUser : chainUsers) {
+        Operation *op = chainUser.getOperation();
+        for (int i = op->getNumOperands() - 1; i >= 0; --i) {
+          if (op->getOperand(i) == sem)
+            op->eraseOperand(i);
+        }
+      }
+
+      // Snapshot remaining users (acquires + deallocs) and erase.
       for (Operation *u : llvm::SmallVector<Operation *>(sem.getUsers())) {
         if (auto acq = dyn_cast<SemAcquireOp>(u)) {
           acq.getResult().replaceAllUsesWith(acq.getMemref());
