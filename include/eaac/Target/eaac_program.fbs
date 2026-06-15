@@ -42,21 +42,19 @@ table BufferRef {
 
 /// Allocate and initialize a hardware semaphore pair.
 table SemAlloc {
-  /// Static hardware address (0–15).
-  address: uint16;
+  /// Fused trigger-state index: `(sem_addr << genWidth) | generation`. The
+  /// hardware uses this directly as the index into its trigger state vector;
+  /// the assembler decomposes it only when populating SemProg's `semAddr`
+  /// and `generation` slots.
+  fused_address: uint16;
   /// Initial empty count.
   empty_count: uint32;
   /// Initial full count.
   full_count: uint32;
-  /// Anti-aliasing chains: other hardware semaphore addresses whose
-  /// completion this allocation must wait for before initializing.
-  /// Empty for ordinary allocations.
-  chain_addresses: [uint16];
-  /// Per-address generation tag. Successive SemAllocs on the same
-  /// `address` advance this counter (wrapping at the DLTI-configured
-  /// `num_semaphore_generations`), so the fabric can distinguish this
-  /// allocation from earlier and later occupants of the same slot.
-  generation: uint16;
+  /// Anti-aliasing chains: predecessor fused addresses whose completion
+  /// this allocation must wait for before initializing. Empty for ordinary
+  /// allocations.
+  chains: [uint16];
 }
 
 /// Release a hardware semaphore pair.
@@ -66,19 +64,14 @@ table SemDealloc {
 }
 
 /// A semaphore dependency inside an execute block.
-/// Pairs a semaphore address with a buffer reference.
+/// Pairs a fused semaphore address with a buffer reference. Chaining
+/// semantics live exclusively on `SemAlloc`.
 table SemDep {
-  /// Hardware semaphore address.
-  sem_address: uint16;
+  /// Fused trigger-state index: `(sem_addr << genWidth) | generation`,
+  /// identifying the specific tenant of a slot the dependency targets.
+  fused_address: uint16;
   /// Index into the enclosing Function.buffers table.
   buffer_id: uint32;
-  /// Anti-aliasing chains: other hardware semaphore addresses whose
-  /// completion this dependency must wait for at initialization time.
-  /// Empty for ordinary data dependencies.
-  chain_addresses: [uint16];
-  /// Generation tag of the SemAlloc this dependency targets. Lets the
-  /// fabric reject stale signals from an earlier occupant of the slot.
-  generation: uint16;
 }
 
 /// An asynchronous DMA transfer operation.

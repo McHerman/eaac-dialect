@@ -137,13 +137,64 @@ static uint16_t getSemGeneration(Value semaphore) {
   return 0;
 }
 
-/// Resolve a list of chains_from operands into their hardware addresses.
-static std::vector<uint16_t> getChainAddresses(ValueRange chains) {
-  std::vector<uint16_t> addrs;
-  addrs.reserve(chains.size());
+/// Number of bits required to express `numGenerations` distinct generation
+/// values. Matches the hardware's `semaphoreGenerationWidth` knob.
+static unsigned computeGenWidth(int64_t numGenerations) {
+  if (numGenerations <= 1)
+    return 0;
+  unsigned w = 0;
+  uint64_t n = static_cast<uint64_t>(numGenerations - 1);
+  while (n) {
+    n >>= 1;
+    ++w;
+  }
+  return w;
+}
+
+/// Fuse a (semIdx, gen) pair into the trigger-state index used downstream:
+///   fused = (semIdx << genWidth) | (gen & genMask)
+static uint16_t fuseSemAddr(uint16_t semIdx, uint16_t gen, unsigned genWidth) {
+  uint16_t mask = static_cast<uint16_t>((1u << genWidth) - 1);
+  return static_cast<uint16_t>((semIdx << genWidth) | (gen & mask));
+}
+
+static uint16_t getSemFusedAddress(Value semaphore, unsigned genWidth) {
+  return fuseSemAddr(getSemAddress(semaphore), getSemGeneration(semaphore),
+                     genWidth);
+}
+
+/// Resolve a list of chains_from operands into fused addresses.
+static std::vector<uint16_t> getChainFused(ValueRange chains, unsigned genWidth) {
+  std::vector<uint16_t> fused;
+  fused.reserve(chains.size());
   for (Value c : chains)
-    addrs.push_back(getSemAddress(c));
-  return addrs;
+    fused.push_back(getSemFusedAddress(c, genWidth));
+  return fused;
+}
+
+/// Read `num_semaphore_generations` from the module's DLTI EAAC device spec.
+/// Returns 1 (i.e., genWidth = 0) if the spec is missing — the FB stays valid
+/// for legacy single-generation programs.
+static int64_t readNumSemaphoreGenerations(ModuleOp module) {
+  auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
+      module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
+  if (!sysSpec)
+    return 1;
+  auto deviceId = StringAttr::get(module.getContext(), "EAAC");
+  std::optional<TargetDeviceSpecInterface> deviceSpec =
+      sysSpec.getDeviceSpecForDeviceID(deviceId);
+  if (!deviceSpec)
+    return 1;
+  for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
+    auto entryKey = dyn_cast<StringAttr>(entry.getKey());
+    if (!entryKey || entryKey.getValue() != "num_semaphore_generations")
+      continue;
+    auto i = dyn_cast<IntegerAttr>(entry.getValue());
+    if (!i)
+      return 1;
+    return i.getInt();
+  }
+  return 1;
 }
 
 /// Try to extract a constant index value from an SSA value.
@@ -164,7 +215,7 @@ static uint32_t getConstantIndex(Value val) {
 /// Serialize a single eaac.execute block into an Execute FlatBuffer table.
 static flatbuffers::Offset<fb::Execute>
 serializeExecute(flatbuffers::FlatBufferBuilder &builder, ExecuteOp execOp,
-                 BufferTable &buffers) {
+                 BufferTable &buffers, unsigned genWidth) {
   std::vector<flatbuffers::Offset<fb::SemDep>> acquires;
   std::vector<flatbuffers::Offset<fb::SemDep>> semRequires;
   flatbuffers::Offset<void> payloadOffset;
@@ -173,16 +224,12 @@ serializeExecute(flatbuffers::FlatBufferBuilder &builder, ExecuteOp execOp,
   for (Operation &op : execOp.getBody().front()) {
     if (auto acqOp = dyn_cast<SemAcquireOp>(op)) {
       uint32_t bufId = buffers.getOrAssign(acqOp.getMemref());
-      acquires.push_back(fb::CreateSemDepDirect(
-          builder, getSemAddress(acqOp.getSemaphore()), bufId,
-          /*chain_addresses=*/nullptr,
-          getSemGeneration(acqOp.getSemaphore())));
+      acquires.push_back(fb::CreateSemDep(
+          builder, getSemFusedAddress(acqOp.getSemaphore(), genWidth), bufId));
     } else if (auto reqOp = dyn_cast<SemRequireOp>(op)) {
       uint32_t bufId = buffers.getOrAssign(reqOp.getMemref());
-      auto chainAddrs = getChainAddresses(reqOp.getChainsFrom());
-      semRequires.push_back(fb::CreateSemDepDirect(
-          builder, getSemAddress(reqOp.getSemaphore()), bufId, &chainAddrs,
-          getSemGeneration(reqOp.getSemaphore())));
+      semRequires.push_back(fb::CreateSemDep(
+          builder, getSemFusedAddress(reqOp.getSemaphore(), genWidth), bufId));
     } else if (auto dmaOp = dyn_cast<DmaStartOp>(op)) {
       uint32_t src = buffers.getOrAssign(dmaOp.getSrc());
       uint32_t dst = buffers.getOrAssign(dmaOp.getDst());
@@ -214,6 +261,8 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
                                            llvm::raw_ostream &os) {
   flatbuffers::FlatBufferBuilder builder(4096);
 
+  unsigned genWidth = computeGenWidth(readNumSemaphoreGenerations(module));
+
   std::vector<flatbuffers::Offset<fb::Function>> functions;
   uint16_t maxSemAddr = 0;
 
@@ -229,10 +278,11 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
           maxSemAddr = addr + 1;
         uint32_t emptyCnt = getConstantIndex(semAlloc.getEmptyCount());
         uint32_t fullCnt = getConstantIndex(semAlloc.getFullCount());
-        auto chainAddrs = getChainAddresses(semAlloc.getChainsFrom());
-        uint16_t generation = getSemGeneration(semAlloc.getSemaphore());
-        auto sa = fb::CreateSemAllocDirect(builder, addr, emptyCnt, fullCnt,
-                                           &chainAddrs, generation);
+        auto chainsFused = getChainFused(semAlloc.getChainsFrom(), genWidth);
+        uint16_t fusedAddr =
+            getSemFusedAddress(semAlloc.getSemaphore(), genWidth);
+        auto sa = fb::CreateSemAllocDirect(builder, fusedAddr, emptyCnt,
+                                           fullCnt, &chainsFused);
         ops.push_back(fb::CreateOperation(builder, fb::Command_SemAlloc,
                                           sa.Union()));
       // SemDealloc is intentionally not emitted: with fresh-address-first
@@ -244,7 +294,7 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
       //   ops.push_back(fb::CreateOperation(builder, fb::Command_SemDealloc,
       //                                     sd.Union()));
       } else if (auto execOp = dyn_cast<ExecuteOp>(op)) {
-        auto exec = serializeExecute(builder, execOp, buffers);
+        auto exec = serializeExecute(builder, execOp, buffers, genWidth);
         ops.push_back(fb::CreateOperation(builder, fb::Command_Execute,
                                           exec.Union()));
       } else if (auto deallocOp = dyn_cast<memref::DeallocOp>(op)) {
