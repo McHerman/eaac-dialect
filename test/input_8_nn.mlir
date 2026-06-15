@@ -9,7 +9,8 @@ module attributes {
     "EAAC" = #dlti.target_device_spec<
       "tier_capacities" = array<i64: 1024, 2048, 16384>,
       "reuse_guard" = 32 : i64,
-      "num_semaphore_pairs" = 32 : i64
+      "num_semaphore_pairs" = 16 : i64,
+      "num_semaphore_generations" = 4 : i64
     >
   >
 } {

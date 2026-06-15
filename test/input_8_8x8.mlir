@@ -5,7 +5,9 @@ module attributes {
   dlti.target_system_spec = #dlti.target_system_spec<
     "EAAC" = #dlti.target_device_spec<
       "tier_capacities" = array<i64: 1024, 2048, 16384>,
-      "num_semaphore_pairs" = 16 : i64
+      "alias_check_length" = 128 : i64,
+      "num_semaphore_pairs" = 16 : i64,
+      "num_semaphore_generations" = 4 : i64
     >
   >
 } {
