@@ -179,11 +179,13 @@ private:
       interval.start = opNumbers.lookup(semAllocOp);
       interval.end = interval.start;
 
+      /*
       if (auto ch = channelAnalysis.getAssignment(semAllocOp.getSemaphore())) {
         interval.channelName = ch->name;
         interval.channelDepth = ch->depth;
         interval.channelIdx = ch->index;
       }
+      */
 
       semToIdx[semAllocOp.getSemaphore()] = intervals.size();
 
@@ -241,9 +243,11 @@ private:
       llvm::dbgs() << "Semaphore intervals (" << intervals.size() << "):\n";
       for (const auto &iv : intervals) {
         llvm::dbgs() << "  sem @" << iv.start << "-" << iv.end;
+        /*
         if (iv.onChannel())
           llvm::dbgs() << " [" << iv.channelName << " idx=" << iv.channelIdx
                        << "/" << iv.channelDepth << "]";
+        */
         llvm::dbgs() << "\n";
       }
     });
@@ -270,6 +274,7 @@ private:
       counter++;
       return gen;
     };
+    /*
     // Discover the channels actually used in this function (subset of what
     // the analysis surfaced module-wide), then reserve a ring per channel at
     // the top of the address space. Sort by name for deterministic layout.
@@ -302,10 +307,13 @@ private:
           << " addresses";
       return failure();
     }
+    */
+    const int64_t scanCap = numPairs;
 
     // Pre-assign channel-bound intervals. No liveness/eviction check: the
     // architectural drain depth K guarantees the previous slot occupant is
     // done by the time we wrap around.
+    /*
     for (auto &iv : intervals) {
       if (!iv.onChannel())
         continue;
@@ -319,14 +327,17 @@ private:
                  << " for sem @" << iv.start << "-" << iv.end
                  << " (idx=" << iv.channelIdx << ")\n");
     }
+    */
 
     llvm::SmallVector<SemInterval *> active;
     int64_t hwm = 0;
     llvm::SmallVector<int64_t> lastEnd(scanCap, -1);
 
     for (auto &cur : intervals) {
+      /*
       if (cur.onChannel())
         continue; // already placed in a ring
+      */
 
       // Expire finished intervals.
       llvm::SmallVector<SemInterval *> stillActive;
@@ -512,11 +523,14 @@ private:
       op->setAttr("eaac.sem_gen",
                   IntegerAttr::get(IndexType::get(ctx), iv.generation));
 
+      /*
       if (iv.onChannel()) {
         // Ring reuse is architecturally safe (drain pipeline guarantees the
         // previous slot occupant is done), so no warning here.
         op->setAttr("eaac.sem_ring", StringAttr::get(ctx, iv.channelName));
-      } else if (iv.reused) {
+      } else
+      */
+      if (iv.reused) {
         op->setAttr("eaac.sem_reused", UnitAttr::get(ctx));
         op->emitWarning("semaphore address reused due to register pressure — "
                         "correctness depends on self-sequencing guarantee");
@@ -528,7 +542,7 @@ private:
   processFunction(func::FuncOp funcOp, int64_t numPairs,
                   int64_t numGenerations,
                   const StreamingChannelAnalysis &channelAnalysis) {
-    elideRedundantChannelSemaphores(funcOp, channelAnalysis);
+    //elideRedundantChannelSemaphores(funcOp, channelAnalysis);
     auto opNumbers = numberOperations(funcOp);
     auto intervals = buildIntervals(funcOp, opNumbers, channelAnalysis);
 
