@@ -74,15 +74,6 @@ private:
           if (!memref)
             return;
 
-          // Self-sequencing of the different command queus, removed if adding additional pipelining
-          /*
-          if (llvm::any_of(executeOp.getBody()->without_terminator(),
-                           [&](Operation &op) {
-                             return op.getName() == innerOp->getName();
-                           }))
-            return;
-          */
-
           tokenToMemref[token] = memref;
         });
       }

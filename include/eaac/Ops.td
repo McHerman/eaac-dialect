@@ -296,14 +296,16 @@ def ChainOp : EAAC_Op<"chain"> {
   let summary = "Anti-aliasing dependency embedded in an async.execute body";
   let description = [{
     Embedded inside an `async.execute` body. Declares that the enclosing
-    producer must wait for `predecessor` (an `async.token` from another
-    `async.execute`) to fully complete before claiming its output slot.
-    Used to express allocator-induced anti-aliasing dependencies that
-    aren't part of the value-flow graph.
+    exec's input semaphore must also wait for `predecessor` — the token
+    that an `eaac.require` in the predecessor exec depends on — before
+    it can be acquired. Used to express broadcast dependencies (multiple
+    consumers sharing one token) and allocator-induced anti-aliasing
+    dependencies that aren't part of the value-flow graph.
 
     `LowerAsyncToSemaphore` consumes this op: `predecessor` is resolved to
-    the corresponding semaphore and appended to the enclosing producer's
-    `eaac.sem_acquire chains_from(...)` list, then this op is erased.
+    the corresponding hardware semaphore via `tokenToSem` and appended to
+    the enclosing exec's `eaac.sem_alloc chains_from(...)` list, then this
+    op is erased.
 
     The op has no result and intentionally implements no memory effects
     interface so it is preserved through the standard DCE / canonicalization
@@ -312,16 +314,17 @@ def ChainOp : EAAC_Op<"chain"> {
     Example:
     ```mlir
     %tok_b = async.execute(%data_dep) {
-      eaac.chain %tok_a    // producer waits for tok_a at init time
+      eaac.chain %tok_a    // input semaphore also chains on tok_a's semaphore
       // ...body...
     }
     ```
   }];
 
-  let arguments = (ins Async_TokenType:$predecessor);
+  let arguments = (ins Async_TokenType:$predecessor,
+                       UnitAttr:$is_broadcast);
 
   let assemblyFormat = [{
-    $predecessor attr-dict
+    $predecessor (`broadcast` $is_broadcast^)? attr-dict
   }];
 }
 

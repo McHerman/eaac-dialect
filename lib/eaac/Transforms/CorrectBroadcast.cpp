@@ -37,7 +37,7 @@ public:
 private:
 
 
-  using ChainPair = std::pair<eaac::RequireOp, async::ExecuteOp>;
+  using ChainPair = std::pair<eaac::RequireOp, eaac::RequireOp>;
 
   void processFunction(func::FuncOp funcOp) {
 
@@ -45,10 +45,9 @@ private:
     int64_t time = 0;
     funcOp.walk([&](Operation *op) { opTime[op] = time++; });
 
-    // Phase 1: collect requires marked for replacement. Don't mutate the IR
-    // here — erasing inside a walk can invalidate the walker's cursor.
-    //llvm::SmallVector<RequireOp> toErase;
-    llvm::SmallVector<ChainPair> toChainAndErase; 
+    // Phase 1: collect non-survivor requires. Don't mutate the IR here —
+    // creating/erasing inside a walk can invalidate the walker's cursor.
+    llvm::SmallVector<ChainPair> toRewire;
 
     funcOp.walk([&](async::ExecuteOp executeOp) {
       executeOp.getBody()->walk([&](RequireOp requireOp) {
@@ -65,37 +64,54 @@ private:
           return;                                  // survivor → keep
 
         auto survivor = cast<RequireOp>(users.front());
-        auto survivorExec = survivor->getParentOfType<async::ExecuteOp>();
-        toChainAndErase.emplace_back(requireOp, survivorExec);
+        toRewire.emplace_back(requireOp, survivor);
       });
     });
 
-    // Phase 2: mutate. Safe to insert/erase here — walks are done.
-    for (auto [requireOp, survivorExec] : toChainAndErase) {
-
-
+    // Phase 2: mutate. Safe to create/rewire here — walks are done.
+    for (auto [requireOp, survivor] : toRewire) {
+      Value broadcastToken = requireOp.getToken();
+      auto consumerExec = requireOp->getParentOfType<async::ExecuteOp>();
+      Location loc = requireOp.getLoc();
 
       LLVM_DEBUG({
-        llvm::dbgs() << "[correct-broadcast] demoting require @t="
-                     << opTime.lookup(requireOp) << " to chain in @"
+        llvm::dbgs() << "[correct-broadcast] threading require @t="
+                     << opTime.lookup(requireOp) << " through chain exec in @"
                      << funcOp.getSymName() << "\n"
-                     << "  require:        " << *requireOp << "\n"
-                     << "  survivor exec:  @t="
-                     << opTime.lookup(survivorExec) << "\n"
-                     << "  chain predecessor token: "
-                     << survivorExec.getToken() << "\n";
+                     << "  require:   " << *requireOp << "\n"
+                     << "  survivor:  " << *survivor << "\n";
       });
 
+      // Build a new async.execute just before the consumer exec. It depends
+      // on the broadcast token and holds a single eaac.chain, so its
+      // semaphore pair is the one the consumer ends up waiting on instead of
+      // the shared broadcast token.
+      OpBuilder builder(consumerExec);
+      auto chainExec = async::ExecuteOp::create(
+          builder, loc,
+          /*resultTypes=*/TypeRange{},
+          /*dependencies=*/ValueRange{broadcastToken},
+          /*operands=*/ValueRange{});
 
-      // Insert eaac.chain at the require's position, referencing the
-      // surviving require's producing async.execute token.
-      OpBuilder builder(requireOp);
-      ChainOp::create(builder, requireOp.getLoc(), survivorExec.getToken());
+      Block *body = chainExec.getBody();
+      if (!body->empty())
+        body->back().erase();             // strip auto-generated yield
+      OpBuilder bodyBuilder(body, body->end());
+      ChainOp::create(bodyBuilder, loc, broadcastToken,
+                      /*is_broadcast=*/true);
+      async::YieldOp::create(bodyBuilder, loc, ValueRange{});
 
-      // Forward downstream uses onto the underlying memref so the verifier
-      // stays happy after erase.
-      requireOp.getResult().replaceAllUsesWith(requireOp.getMemref());
-      requireOp.erase();
+      // Rewire: the consumer's broadcast-token dependency becomes a
+      // dependency on the new chain exec, and the require's token operand
+      // points at the new token too.
+      Value newToken = chainExec.getToken();
+      for (auto [i, dep] : llvm::enumerate(consumerExec.getDependencies())) {
+        if (dep == broadcastToken) {
+          consumerExec->setOperand(i, newToken);
+          break;
+        }
+      }
+      requireOp->setOperand(0, newToken);
     }
   }
 };

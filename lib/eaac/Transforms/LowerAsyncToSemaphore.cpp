@@ -101,18 +101,26 @@ public:
       llvm::DenseMap<Value, Value> tokenToSem;
       buildTokenToSemMap(funcOp, tokenToSem);
 
+      // Stage 1: convert eaac.require → eaac.sem_require. After this,
+      // tokens are only referenced by async.execute.dependencies, which
+      // simplifies the broadcast cleanup in chainSem.
+      {
+        RewritePatternSet patterns(&getContext());
+        patterns.add<RequireToSemRequire>(&getContext(), tokenToSem);
+        if (failed(applyPatternsGreedily(funcOp, std::move(patterns))))
+          signalPassFailure();
+      }
+
+      // Stage 2: resolve eaac.chain ops; tear down broadcast chain execs.
       chainSem(funcOp, tokenToSem);
 
-
-      
-
-      // Apply rewrite patterns.
-      RewritePatternSet patterns(&getContext());
-      patterns.add<RequireToSemRequire>(&getContext(), tokenToSem);
-      patterns.add<AsyncExecuteToEaacExecute>(&getContext());
-
-      if (failed(applyPatternsGreedily(funcOp, std::move(patterns))))
-        signalPassFailure();
+      // Stage 3: convert async.execute → eaac.execute and drop tokens.
+      {
+        RewritePatternSet patterns(&getContext());
+        patterns.add<AsyncExecuteToEaacExecute>(&getContext());
+        if (failed(applyPatternsGreedily(funcOp, std::move(patterns))))
+          signalPassFailure();
+      }
 
       // Insert sem_dealloc before function return.
       insertSemDeallocs(funcOp, tokenToSem);
@@ -180,22 +188,22 @@ private:
     }
   }
 
-  /// For each `eaac.chain` op embedded in an async.execute body, resolve its
-  /// predecessor token to a hardware semaphore via `tokenToSem`, append that
-  /// semaphore to the enclosing producer's `sem_alloc.chains_from` operand
-  /// list, and erase the chain op. Must run before the greedy rewrite driver
-  /// — once `AsyncExecuteToEaacExecute` drops uses of async tokens, any
-  /// surviving chain op would be left with null operands.
-  ///
-  /// Chains live on `sem_alloc` (initialization-time constraint) rather than
-  /// on `sem_acquire` (use-time): the predecessor must finish *before this
-  /// semaphore can be initialized*, which is what sem_alloc represents.
+  // Append chained semaphores to semaphore allocation
   void chainSem(func::FuncOp funcOp,
                 const llvm::DenseMap<Value, Value> &tokenToSem) {
     llvm::SmallVector<eaac::ChainOp> chainOps;
     funcOp.walk([&](eaac::ChainOp op) { chainOps.push_back(op); });
 
+    // Process non-broadcast (alias) chains before broadcast chains.
+    /*
+    llvm::stable_sort(chainOps, [](eaac::ChainOp a, eaac::ChainOp b) {
+      return !a.getIsBroadcast() && b.getIsBroadcast();
+    });
+    */
+
     for (eaac::ChainOp chainOp : chainOps) {
+      bool isBroadcast = chainOp.getIsBroadcast();
+
       // The enclosing async.execute is the writer; the SemAllocOp gating its
       // output signal is the one we need to add a chain to.
       auto producerExec = chainOp->getParentOfType<async::ExecuteOp>();
@@ -245,12 +253,36 @@ private:
         continue;
       }
 
-      // Append predSem to the producer's chains_from. SemAllocOp has only
-      // one variadic operand at the tail, so an end-insert lands inside
-      // chains_from without any segment-size juggling. Mutating in place
-      // (rather than rebuild+erase) keeps `tokenToSem`'s semaphore Values
-      // valid — rebuilding would invalidate them when the old op was erased,
-      // causing use-after-free in downstream lookups.
+      // Broadcast chains: the chain semaphore starts full (data is already
+      // available from the broadcast producer), so we swap empty/full counts
+      // and tear down the chain exec entirely.
+      if (isBroadcast) {
+        Value e = producerAlloc.getEmptyCount();
+        Value f = producerAlloc.getFullCount();
+        producerAlloc->setOperand(0, f);
+        producerAlloc->setOperand(1, e);
+
+        producerAlloc->insertOperands(producerAlloc->getNumOperands(),
+                                      predSem);
+
+        producerAlloc->setAttr(
+            "broadcast_chain",
+            UnitAttr::get(producerAlloc.getContext()));
+
+
+        // Redirect the remaining dep uses to the broadcast token (those
+        // dep operands get dropped by AsyncExecuteToEaacExecute anyway).
+        Value chainToken = producerExec.getToken();
+        chainToken.replaceAllUsesWith(chainOp.getPredecessor());
+
+        // Erase the chain exec — nukes producerAcquire, chainOp, and
+        // async.yield in one shot. chainOp is invalid after this; skip the
+        // trailing common path.
+        producerExec.erase();
+        continue;
+      }
+
+      // Append predSem to the producer's chains_from.
       producerAlloc->insertOperands(producerAlloc->getNumOperands(), predSem);
       chainOp.erase();
     }

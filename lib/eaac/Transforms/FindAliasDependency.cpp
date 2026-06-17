@@ -190,6 +190,20 @@ static bool writesTo(Operation *op, Value memref) {
   return false;
 }
 
+/// Find the eaac.require inside `exec` whose memref operand is `memref`.
+/// Returns a null op if no such require exists.
+static RequireOp findRequireForMemref(async::ExecuteOp exec, Value memref) {
+  RequireOp found = nullptr;
+  exec.getBody()->walk([&](RequireOp r) {
+    if (r.getMemref() == memref) {
+      found = r;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 /// async.execute with the largest op-time that has any user of `memref` in
 /// its body. Used as the "last access" endpoint of the older buffer in an
 /// alias pair. Returns nullptr if no such execute exists (e.g. memref was
@@ -293,21 +307,27 @@ public:
       LLVM_DEBUG({
         llvm::dbgs() << "[find-alias-dep] " << pairs.size()
                      << " alias pairs in @" << funcOp.getSymName() << "\n";
-        for (auto [reader, writer] : pairs)
+        for (auto [reader, writer, memref] : pairs)
           llvm::dbgs() << "  reader=" << reader << " writer=" << writer
                        << "\n";
       });
-      for (auto [readerExec, writerExec] : pairs) {
+      for (auto [readerExec, writerExec, readerMemref] : pairs) {
         // readerExec : async.execute wrapping the last access of the older
         //              buffer (the predecessor on the aliased address).
         // writerExec : async.execute wrapping the first write of the newer
         //              buffer (the successor that overwrites the address).
 
+        RequireOp readerRequire = findRequireForMemref(readerExec, readerMemref);
+        if (!readerRequire) {
+          readerExec.emitWarning(
+              "eaac.chain: no eaac.require found for aliased memref in "
+              "reader exec; dropping alias edge");
+          continue;
+        }
 
         OpBuilder builder(writerExec.getBody(), writerExec.getBody()->begin());
-          ChainOp::create(builder, writerExec.getLoc(), readerExec.getToken());
-
-        //(void)readerExec;
+        ChainOp::create(builder, writerExec.getLoc(), readerRequire.getToken(),
+                        /*is_broadcast=*/false);
       }
     });
   }
@@ -316,8 +336,13 @@ private:
   /// A reader/writer pair on aliased addresses. `reader` is the async.execute
   /// whose body holds the last access of the older buffer; `writer` is the
   /// async.execute whose body holds the first write to the newer buffer that
-  /// will physically overwrite the older one.
-  using AliasPair = std::pair<async::ExecuteOp, async::ExecuteOp>;
+  /// will physically overwrite the older one. `readerMemref` is the aliased
+  /// memref value accessed in `reader`, needed to locate its eaac.require.
+  struct AliasPair {
+    async::ExecuteOp reader;
+    async::ExecuteOp writer;
+    Value readerMemref;
+  };
 
   /// Walk `funcOp` and return every pair of async.executes whose memrefs
   /// share an {tier, [offset, offset+size)} range and are not already
@@ -364,7 +389,7 @@ private:
         if (transitivelyOrdered(writer, reader, opTime))
           continue; // already covered by the existing token graph
 
-        pairs.emplace_back(reader, writer);
+        pairs.push_back({reader, writer, a.memref});
       }
     }
     return pairs;
