@@ -137,6 +137,19 @@ static uint16_t getSemGeneration(Value semaphore) {
   return 0;
 }
 
+/// Map the MLIR `eaac.EventMode` enum on a SemAllocOp to its FlatBuffer
+/// counterpart. Defaults to RW so existing IR without an explicit event_mode
+/// keeps its current behavior.
+static eaac_fb::SemEventMode toFbEventMode(EventMode mode) {
+  switch (mode) {
+  case EventMode::RW:
+    return eaac_fb::SemEventMode_RW;
+  case EventMode::R:
+    return eaac_fb::SemEventMode_R;
+  }
+  return eaac_fb::SemEventMode_RW;
+}
+
 /// Number of bits required to express `numGenerations` distinct generation
 /// values. Matches the hardware's `semaphoreGenerationWidth` knob.
 static unsigned computeGenWidth(int64_t numGenerations) {
@@ -225,11 +238,13 @@ serializeExecute(flatbuffers::FlatBufferBuilder &builder, ExecuteOp execOp,
     if (auto acqOp = dyn_cast<SemAcquireOp>(op)) {
       uint32_t bufId = buffers.getOrAssign(acqOp.getMemref());
       acquires.push_back(fb::CreateSemDep(
-          builder, getSemFusedAddress(acqOp.getSemaphore(), genWidth), bufId));
+          builder, getSemFusedAddress(acqOp.getSemaphore(), genWidth), bufId,
+          static_cast<uint32_t>(acqOp.getStepSize())));
     } else if (auto reqOp = dyn_cast<SemRequireOp>(op)) {
       uint32_t bufId = buffers.getOrAssign(reqOp.getMemref());
       semRequires.push_back(fb::CreateSemDep(
-          builder, getSemFusedAddress(reqOp.getSemaphore(), genWidth), bufId));
+          builder, getSemFusedAddress(reqOp.getSemaphore(), genWidth), bufId,
+          static_cast<uint32_t>(reqOp.getStepSize())));
     } else if (auto dmaOp = dyn_cast<DmaStartOp>(op)) {
       uint32_t src = buffers.getOrAssign(dmaOp.getSrc());
       uint32_t dst = buffers.getOrAssign(dmaOp.getDst());
@@ -279,10 +294,13 @@ static LogicalResult translateToFlatbuffer(ModuleOp module,
         uint32_t emptyCnt = getConstantIndex(semAlloc.getEmptyCount());
         uint32_t fullCnt = getConstantIndex(semAlloc.getFullCount());
         auto chainsFused = getChainFused(semAlloc.getChainsFrom(), genWidth);
+
+        eaac_fb::SemEventMode eventMode = toFbEventMode(semAlloc.getEventMode());
+
         uint16_t fusedAddr =
             getSemFusedAddress(semAlloc.getSemaphore(), genWidth);
         auto sa = fb::CreateSemAllocDirect(builder, fusedAddr, emptyCnt,
-                                           fullCnt, &chainsFused);
+                                           fullCnt, &chainsFused, eventMode);
         ops.push_back(fb::CreateOperation(builder, fb::Command_SemAlloc,
                                           sa.Union()));
       // SemDealloc is intentionally not emitted: with fresh-address-first

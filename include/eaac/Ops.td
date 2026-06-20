@@ -10,8 +10,24 @@
 include "eaac/EAAC.td"
 include "eaac/Types.td"
 include "mlir/Dialect/Async/IR/AsyncTypes.td"
+include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+
+//===----------------------------------------------------------------------===//
+// EventMode enum: controls when a semaphore fires events on the scoreboard.
+//===----------------------------------------------------------------------===//
+
+def EAAC_EventModeRW : I32EnumAttrCase<"RW", 0, "rw">;
+def EAAC_EventModeR  : I32EnumAttrCase<"R",  1, "r">;
+
+def EAAC_EventModeAttr : I32EnumAttr<
+    "EventMode",
+    "Event generation mode for a semaphore: 'rw' fires on both producer "
+    "acquire and consumer require; 'r' fires only on consumer require",
+    [EAAC_EventModeRW, EAAC_EventModeR]> {
+  let cppNamespace = "::mlir::eaac";
+}
 
 //===----------------------------------------------------------------------===//
 // DmaStartOp - Initiate an asynchronous DMA transfer
@@ -134,12 +150,16 @@ def SemAllocOp : EAAC_Op<"sem_alloc", [
   }];
 
   let arguments = (ins Index:$empty_count, Index:$full_count,
-                       Variadic<EAAC_SemaphoreType>:$chains_from);
+                       Variadic<EAAC_SemaphoreType>:$chains_from,
+                       DefaultValuedAttr<EAAC_EventModeAttr,
+                                         "EventMode::RW">:$event_mode);
   let results = (outs EAAC_SemaphoreType:$semaphore);
 
   let assemblyFormat = [{
     `(` $empty_count `,` $full_count `)`
-    (`chains_from` `(` $chains_from^ `)`)? attr-dict
+    (`chains_from` `(` $chains_from^ `)`)?
+    (`event_mode` `=` $event_mode^)?
+    attr-dict
   }];
 }
 
@@ -218,7 +238,8 @@ def SemRequireOp : EAAC_Op<"sem_require", [
   }];
 
   let arguments = (ins EAAC_SemaphoreType:$semaphore, AnyMemRef:$memref,
-                       Variadic<EAAC_SemaphoreType>:$chains_from);
+                       Variadic<EAAC_SemaphoreType>:$chains_from,
+                       DefaultValuedAttr<I64Attr, "0">:$step_size);
   let results = (outs AnyMemRef:$result);
 
   let assemblyFormat = [{
@@ -252,7 +273,8 @@ def SemAcquireOp : EAAC_Op<"sem_acquire", [
     ```
   }];
 
-  let arguments = (ins EAAC_SemaphoreType:$semaphore, AnyMemRef:$memref);
+  let arguments = (ins EAAC_SemaphoreType:$semaphore, AnyMemRef:$memref,
+                       DefaultValuedAttr<I64Attr, "0">:$step_size);
   let results = (outs AnyMemRef:$result);
 
   let assemblyFormat = [{

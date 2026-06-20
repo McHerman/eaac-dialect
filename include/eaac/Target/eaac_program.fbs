@@ -14,6 +14,12 @@ enum ElementType : byte {
   F64
 }
 
+
+enum SemEventMode : byte {
+  RW = 0,
+  R = 1,
+}
+
 /// A constant tensor (weights, biases, etc.) embedded in the program.
 table Constant {
   /// Name matching the memref.global symbol (e.g. "__constant_128x128xi8").
@@ -55,6 +61,9 @@ table SemAlloc {
   /// this allocation must wait for before initializing. Empty for ordinary
   /// allocations.
   chains: [uint16];
+  // Eventmode for defining which logic to evaluate when a sem is 
+  // finished
+  event_mode: SemEventMode;
 }
 
 /// Release a hardware semaphore pair.
@@ -72,6 +81,8 @@ table SemDep {
   fused_address: uint16;
   /// Index into the enclosing Function.buffers table.
   buffer_id: uint32;
+  /// Number of bytes transferred per step (buffer size for non-streaming use).
+  step_size: uint32;
 }
 
 /// An asynchronous DMA transfer operation.

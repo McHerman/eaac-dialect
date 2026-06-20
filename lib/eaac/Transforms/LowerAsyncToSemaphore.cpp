@@ -31,6 +31,14 @@ namespace eaac {
 
 namespace {
 
+/// Compute the size in bytes of a statically-shaped memref.
+static int64_t getMemRefSizeInBytes(MemRefType type) {
+  int64_t n = 1;
+  for (int64_t dim : type.getShape())
+    n *= dim;
+  return n * type.getElementTypeBitWidth() / 8;
+}
+
 //===----------------------------------------------------------------------===//
 // Patterns
 //===----------------------------------------------------------------------===//
@@ -48,12 +56,11 @@ struct RequireToSemRequire : OpRewritePattern<RequireOp> {
     if (it == tokenToSem.end())
       return failure();
 
-    auto semReq = SemRequireOp::create(rewriter, op.getLoc(),
-                                       op.getMemref().getType(),
+    auto memrefTy = cast<MemRefType>(op.getMemref().getType());
+    auto semReq = SemRequireOp::create(rewriter, op.getLoc(), memrefTy,
                                        it->second, op.getMemref(),
                                        /*chains_from=*/ValueRange{});
-    // chains_from kept empty; sem_require still carries the operand for
-    // future use, but anti-aliasing chains now live on sem_alloc.
+    semReq.setStepSize(getMemRefSizeInBytes(memrefTy));
     rewriter.replaceOp(op, semReq.getResult());
     return success();
   }
@@ -128,15 +135,6 @@ public:
   }
 
 private:
-  /// Compute the size in bytes of a statically-shaped memref.
-  int64_t getMemRefSizeInBytes(MemRefType type) {
-    int64_t numElements = 1;
-    for (int64_t dim : type.getShape())
-      numElements *= dim;
-    int64_t elementBits = type.getElementTypeBitWidth();
-    return numElements * elementBits / 8;
-  }
-
   /// Walk all async.execute ops, find token→require→memref edges,
   /// insert sem_alloc before each producer, populate tokenToSem.
   void buildTokenToSemMap(func::FuncOp funcOp,
@@ -182,8 +180,9 @@ private:
 
         // Insert sem_acquire at the start of the producer's body.
         builder.setInsertionPointToStart(producerExec.getBody());
-        SemAcquireOp::create(builder, producerExec.getLoc(), memrefTy,
-                             sem.getSemaphore(), memref);
+        auto acq = SemAcquireOp::create(builder, producerExec.getLoc(), memrefTy,
+                                        sem.getSemaphore(), memref);
+        acq.setStepSize(sizeBytes);
       }
     }
   }
@@ -195,11 +194,9 @@ private:
     funcOp.walk([&](eaac::ChainOp op) { chainOps.push_back(op); });
 
     // Process non-broadcast (alias) chains before broadcast chains.
-    /*
     llvm::stable_sort(chainOps, [](eaac::ChainOp a, eaac::ChainOp b) {
       return !a.getIsBroadcast() && b.getIsBroadcast();
     });
-    */
 
     for (eaac::ChainOp chainOp : chainOps) {
       bool isBroadcast = chainOp.getIsBroadcast();
@@ -262,12 +259,10 @@ private:
         producerAlloc->setOperand(0, f);
         producerAlloc->setOperand(1, e);
 
-        producerAlloc->insertOperands(producerAlloc->getNumOperands(),
-                                      predSem);
+        //producerAlloc->insertOperands(producerAlloc->getNumOperands(),
+        //                              predSem);
 
-        producerAlloc->setAttr(
-            "broadcast_chain",
-            UnitAttr::get(producerAlloc.getContext()));
+        producerAlloc.setEventMode(EventMode::R);
 
 
         // Redirect the remaining dep uses to the broadcast token (those

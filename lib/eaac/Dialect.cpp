@@ -101,6 +101,8 @@ void StoreOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+#include "eaac/EAACEnums.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "eaac/Ops.cpp.inc"
 
