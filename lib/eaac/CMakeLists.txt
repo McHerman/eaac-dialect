@@ -15,3 +15,4 @@ target_link_libraries(EAACDialect
 
 add_subdirectory(Transforms)
 add_subdirectory(Target)
+add_subdirectory(Transform)

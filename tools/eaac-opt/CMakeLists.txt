@@ -15,6 +15,7 @@ target_link_libraries(eaac-opt
   PRIVATE
   EAACDialect
   EAACTransforms
+  EAACTransformOps
   MLIRIR
   MLIRParser
   MLIRSupport

@@ -19,3 +19,5 @@ add_public_tablegen_target(EAACPassIncGen)
 
 # FlatBuffer schema generation
 add_subdirectory(Target)
+
+add_subdirectory(Transform)

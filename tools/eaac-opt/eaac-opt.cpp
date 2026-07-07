@@ -13,6 +13,7 @@
 
 #include "eaac/Dialect.h"
 #include "eaac/Passes.h"
+#include "eaac/Transform/EAACTransformOps.h"
 
 int main(int argc, char **argv) {
   // Register MLIR core passes (like bufferization)
@@ -31,6 +32,9 @@ int main(int argc, char **argv) {
   
   // Register our EAAC dialect
   registry.insert<mlir::eaac::EAACDialect>();
+
+  // Register EAAC transform ops as a Transform dialect extension
+  mlir::eaac::registerEAACTransformDialectExtension(registry);
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "EAAC optimizer driver\n", registry));
