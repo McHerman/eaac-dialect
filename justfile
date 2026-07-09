@@ -59,8 +59,8 @@ test-almost-full input="risc-v":
     "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
     --transform-interpreter \
     --eaac-legalize-for-hw \
+    --eaac-riscv-kernel-to-function \
     test/{{input}}.mlir
-    #--eaac-riscv-kernel-to-function \
     #--eaac-riscv-kernel-to-llvm \
 
 
