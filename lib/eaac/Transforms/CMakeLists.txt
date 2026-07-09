@@ -11,7 +11,6 @@ add_mlir_library(EAACTransforms
   CorrectBroadcast.cpp
   InsertRequire.cpp
   LowerAsyncToSemaphore.cpp
-  LinalgToEaac.cpp
   InsertLoadStore.cpp
   AssignSemaphoreAddresses.cpp
   LegalizeForEaacHw.cpp

@@ -55,9 +55,6 @@ std::unique_ptr<Pass> createInsertRequirePass();
 /// Creates pass to lower async.execute/tokens to hardware semaphores
 std::unique_ptr<Pass> createLowerAsyncToSemaphorePass();
 
-/// Creates pass to convert linalg ops to EAAC equivalents
-std::unique_ptr<Pass> createLinalgToEaacPass();
-
 /// Creates pass to replace function args/returns with eaac.load/store
 std::unique_ptr<Pass> createInsertLoadStorePass();
 
