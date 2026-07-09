@@ -64,6 +64,12 @@ std::unique_ptr<Pass> createInsertLoadStorePass();
 /// Creates pass to assign static hardware addresses to semaphore pairs
 std::unique_ptr<Pass> createAssignSemaphoreAddressesPass();
 
+/// Creates pass to wrap hardware-unsupported ops in eaac.riscv_execute regions
+std::unique_ptr<Pass> createLegalizeForEaacHwPass();
+
+/// Creates pass to outline eaac.riscv_execute regions into func.func ops
+std::unique_ptr<Pass> createRiscvKernelToFunctionPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//

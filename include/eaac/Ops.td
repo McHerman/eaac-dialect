@@ -314,6 +314,36 @@ def RequireOp : EAAC_Op<"require", [
 // ChainOp - Anti-aliasing dependency marker embedded in an async.execute body
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// RiscvExecuteOp - Region executed by the embedded RISC-V core
+//===----------------------------------------------------------------------===//
+
+def RiscvExecuteOp : EAAC_Op<"riscv_execute", [NoTerminator]> {
+  let summary = "Region to be executed by the embedded RISC-V core";
+  let description = [{
+    Wraps operations that cannot be executed by specialized hardware units and
+    must instead run on the embedded RISC-V core. The region body holds the
+    original (non-hardware-native) ops after legalization.
+
+    The surrounding sem_require / sem_acquire ops in the enclosing eaac.execute
+    establish the synchronization contract. RiscvKernelToLLVM lowers those to
+    AMO-based wait/signal calls and the region body to a named LLVM-IR function
+    identified by `kernel_sym`.
+
+    Example:
+    ```mlir
+    eaac.riscv_execute "my_kernel" {
+      linalg.generic ...
+    }
+    ```
+  }];
+
+  let arguments = (ins StrAttr:$kernel_sym);
+  let regions = (region AnyRegion:$body);
+
+  let assemblyFormat = [{ $kernel_sym attr-dict regions }];
+}
+
 def ChainOp : EAAC_Op<"chain"> {
   let summary = "Anti-aliasing dependency embedded in an async.execute body";
   let description = [{

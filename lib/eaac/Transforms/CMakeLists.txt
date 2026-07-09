@@ -14,6 +14,8 @@ add_mlir_library(EAACTransforms
   LinalgToEaac.cpp
   InsertLoadStore.cpp
   AssignSemaphoreAddresses.cpp
+  LegalizeForEaacHw.cpp
+  RiscvKernelToFunction.cpp
 
   DEPENDS
   EAACPassIncGen

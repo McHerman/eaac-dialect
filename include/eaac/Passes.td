@@ -277,4 +277,55 @@ def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::Mo
   ];
 }
 
+def LegalizeForEaacHw : Pass<"eaac-legalize-for-hw", "mlir::ModuleOp"> {
+  let summary = "Wrap hardware-unsupported ops in eaac.riscv_execute regions";
+  let description = [{
+    Runs after LinalgToEaac. Any linalg op still present inside an eaac.execute
+    body could not be lowered to a native hardware unit and must instead run on
+    the embedded RISC-V core.
+
+    For each such op this pass:
+      1. Creates an eaac.riscv_execute region at the op's location with a
+         unique kernel symbol name derived from the enclosing function.
+      2. Moves the op into the riscv_execute body.
+
+    The surrounding sem_require / sem_acquire ops in the enclosing execute block
+    remain in place — they already encode the synchronization contract and will
+    be consumed by RiscvKernelToLLVM during final lowering.
+  }];
+  let constructor = "mlir::eaac::createLegalizeForEaacHwPass()";
+
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
+def RiscvKernelToFunction : Pass<"eaac-riscv-kernel-to-function", "mlir::ModuleOp"> {
+  let summary = "Outline eaac.riscv_execute regions into standalone func.func ops";
+  let description = [{
+    Runs after LegalizeForEaacHw and AssignSemaphoreAddresses.
+
+    For each eaac.riscv_execute op this pass:
+      1. Collects the values captured from the enclosing eaac.execute scope
+         (memrefs produced by sem_require ops) — these become function arguments.
+      2. Emits a func.func named by kernel_sym whose body is the region body
+         with all captured values replaced by block arguments.
+      3. TODO: inserts eaac_sem_require / eaac_sem_acquire calls as prologue and
+         epilogue in the emitted function using the hardware addresses resolved
+         by AssignSemaphoreAddresses.
+      4. TODO: replaces the eaac.riscv_execute with an eaac.riscv_call referencing
+         the emitted function by symbol.
+
+    After this pass the emitted func.func ops contain plain linalg/arith/memref
+    ops and are ready for the standard linalg → loops → cf → llvm lowering chain.
+  }];
+  let constructor = "mlir::eaac::createRiscvKernelToFunctionPass()";
+
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 #endif // EAAC_PASSES
