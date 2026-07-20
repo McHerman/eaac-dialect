@@ -41,4 +41,6 @@ add_mlir_library(EAACTransforms
   MLIRControlFlowToLLVM
   MLIRLinalgTransforms
   MLIRSCFToControlFlow
+  MLIRTargetLLVMIRExport
+  MLIRLLVMToLLVMIRTranslation
 )

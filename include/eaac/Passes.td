@@ -337,9 +337,11 @@ def RiscvKernelToLLVM : Pass<"eaac-riscv-kernel-to-llvm", "mlir::ModuleOp"> {
 }
 
 def SplitLLVMFromEAAC : Pass<"eaac-split-llvm-from-eaac", "mlir::ModuleOp"> {
-  let summary = "TODO: one-line summary";
+  let summary = "Extract RISC-V staging kernels into a standalone LLVM IR file";
   let description = [{
-    TODO: longer description.
+    Moves constant parameters into the body of MLIR wrapper functions, removes
+    memrefs. Converts wrapper functions into llvm. Gathers all llvm functions
+    and into seperate module, converts to llvmir and dumps to file.
   }];
   let constructor = "mlir::eaac::createSplitLLVMFromEAACPass()";
 
@@ -347,6 +349,12 @@ def SplitLLVMFromEAAC : Pass<"eaac-split-llvm-from-eaac", "mlir::ModuleOp"> {
     "mlir::func::FuncDialect",
     "mlir::LLVM::LLVMDialect",
     "mlir::eaac::EAACDialect"
+  ];
+
+  let options = [
+    Option<"llvmOutputFile", "llvm-output-file", "std::string", /*default=*/"\"\"",
+           "Path to write the extracted LLVM IR module (.ll) to; if empty, "
+           "the extracted kernels are discarded">
   ];
 }
 

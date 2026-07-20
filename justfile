@@ -2,6 +2,7 @@
 
 # Configuration
 llvm_build_dir := "/home/karlhk/dtu/Thesis/MLIR/llvm-project/build"
+dir := "/home/karlhk/dtu/Thesis/MLIR/eaac-dialect"
 build_dir := "build"
 debug_build_dir := "build-debug"
 build_type := "RelWithDebInfo"
@@ -63,8 +64,7 @@ test-almost-full input="riscv-extrasmall":
     --eaac-riscv-kernel-to-llvm \
     --eaac-lower-memref-to-llvm \
     --eaac-lower-memref-to-llvm \
-    --eaac-split-llvm-from-eaac \
-    -debug-only=eaac-split-llvm-from-eaac \
+    --eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/out.ll \
     test/{{input}}.mlir
 
 test-riscv input="llvm_test":
