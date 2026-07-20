@@ -28,6 +28,8 @@ target_link_libraries(eaac-opt
   MLIRFuncDialect
   MLIRPass
   MLIRTransforms
+  MLIRLLVMToLLVMIRTranslation
+  MLIRBuiltinToLLVMIRTranslation
 
   # Minimalloc and abseil
   minimalloc_core
