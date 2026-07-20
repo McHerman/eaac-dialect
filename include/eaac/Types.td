@@ -20,4 +20,14 @@ def EAAC_SemaphoreType : TypeDef<EAAC_Dialect, "Semaphore"> {
   }];
 }
 
+// Memory space attribute carried by memref types for eaac-allocated buffers.
+// `tier` identifies the memory hierarchy level; `offset` is the hardware
+// base address assigned by the memory allocator.
+def EAAC_MemSpaceAttr : AttrDef<EAAC_Dialect, "MemSpace"> {
+  let mnemonic = "mem";
+  let summary = "EAAC hardware memory space (tier + base offset)";
+  let parameters = (ins "int64_t":$tier, "int64_t":$offset);
+  let assemblyFormat = "`<` `tier` `=` $tier `,` `offset` `=` $offset `>`";
+}
+
 #endif // EAAC_TYPES

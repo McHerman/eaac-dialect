@@ -44,7 +44,7 @@ test-local-staging:
 test-insert:
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store test/test_load_insert.mlir
 
-test-almost-full input="risc-v":
+test-almost-full input="riscv-extrasmall":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \
     --inline \
     --canonicalize \
@@ -60,8 +60,25 @@ test-almost-full input="risc-v":
     --transform-interpreter \
     --eaac-legalize-for-hw \
     --eaac-riscv-kernel-to-function \
+    --eaac-riscv-kernel-to-llvm \
+    --eaac-lower-memref-to-llvm \
+    --eaac-lower-memref-to-llvm \
+    --eaac-split-llvm-from-eaac \
+    -debug-only=eaac-split-llvm-from-eaac \
     test/{{input}}.mlir
-    #--eaac-riscv-kernel-to-llvm \
+
+test-riscv input="llvm_test":
+    {{eaac_opt}} \
+    --convert-linalg-to-loops \
+    --lower-affine \
+    --convert-scf-to-cf \
+    --convert-arith-to-llvm \
+    --convert-cf-to-llvm \
+    --convert-func-to-llvm \
+    test/{{input}}.mlir #| \
+    #{{llvm_build_dir}}/bin/mlir-translate --mlir-to-llvmir -o penis.llvm #| \
+    #clang --target=riscv32 -march=rv32ia_zabha -mabi=ilp32 -mcmodel=medany \
+    #-nostdlib -nostartfiles -x ir - -c -o {{input}}.o
 
 
 test-full input="input_8_tiny":

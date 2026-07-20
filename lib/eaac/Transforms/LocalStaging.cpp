@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "eaac/Dialect.h"
 #include "eaac/MemRefLivenessAnalysis.h"
 #include "eaac/Passes.h"
 
@@ -337,6 +338,14 @@ void allocSuccess(LiveInterval &cur, MemoryTier &tier,
                            builder.getI64IntegerAttr(offset));
             defOp->setAttr("eaac.tier",
                            builder.getI64IntegerAttr(tier.level));
+            if (auto alloc = mlir::dyn_cast<memref::AllocOp>(defOp)) {
+              auto oldType = alloc.getType();
+              auto memSpace = eaac::MemSpaceAttr::get(
+                  defOp->getContext(), tier.level, offset);
+              alloc.getResult().setType(MemRefType::get(
+                  oldType.getShape(), oldType.getElementType(),
+                  oldType.getLayout(), memSpace));
+            }
           }
         }
         break;
@@ -918,6 +927,14 @@ static void emitStagingChains(llvm::ArrayRef<StagingChain> chains,
       allocOp->setAttr("eaac.tier",
                        builder.getI64IntegerAttr(stage.homeTier));
       allocOp->setAttr("eaac.offset", builder.getI64IntegerAttr(offset));
+      if (auto alloc = mlir::dyn_cast<memref::AllocOp>(allocOp)) {
+        auto oldType = alloc.getType();
+        auto memSpace = eaac::MemSpaceAttr::get(
+            allocOp->getContext(), stage.homeTier, offset);
+        alloc.getResult().setType(MemRefType::get(
+            oldType.getShape(), oldType.getElementType(),
+            oldType.getLayout(), memSpace));
+      }
       src = sp.memref;
     }
     // Point the consumer at the tier-0 stage in place of the resident.

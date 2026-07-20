@@ -307,4 +307,47 @@ def RiscvKernelToFunction : Pass<"eaac-riscv-kernel-to-function", "mlir::ModuleO
   ];
 }
 
+def LowerEaacMemrefToLLVM : Pass<"eaac-lower-memref-to-llvm", "mlir::ModuleOp"> {
+  let summary = "Lower eaac and memref ops to LLVM dialect";
+  let description = [{
+    TODO: longer description.
+  }];
+  let constructor = "mlir::eaac::createLowerEaacMemrefToLLVMPass()";
+
+  let dependentDialects = [
+    "mlir::eaac::EAACDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+def RiscvKernelToLLVM : Pass<"eaac-riscv-kernel-to-llvm", "mlir::ModuleOp"> {
+  let summary = "Lower eaac.riscv_kernel func.func ops to LLVM dialect";
+  let description = [{
+    Selects func.func ops marked with the eaac.riscv_kernel attribute and
+    applies the standard lowering chain (linalg → loops → cf → llvm) using
+    conversion patterns directly, leaving the surrounding EAAC IR untouched.
+  }];
+  let constructor = "mlir::eaac::createRiscvKernelToLLVMPass()";
+
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect"
+  ];
+}
+
+def SplitLLVMFromEAAC : Pass<"eaac-split-llvm-from-eaac", "mlir::ModuleOp"> {
+  let summary = "TODO: one-line summary";
+  let description = [{
+    TODO: longer description.
+  }];
+  let constructor = "mlir::eaac::createSplitLLVMFromEAACPass()";
+
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 #endif // EAAC_PASSES

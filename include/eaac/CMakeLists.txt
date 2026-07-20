@@ -1,6 +1,8 @@
 set(LLVM_TARGET_DEFINITIONS Types.td)
 mlir_tablegen(Types.h.inc -gen-typedef-decls -dialect=eaac)
 mlir_tablegen(Types.cpp.inc -gen-typedef-defs -dialect=eaac)
+mlir_tablegen(Attrs.h.inc -gen-attrdef-decls -dialect=eaac)
+mlir_tablegen(Attrs.cpp.inc -gen-attrdef-defs -dialect=eaac)
 add_public_tablegen_target(EAACTypesIncGen)
 
 set(LLVM_TARGET_DEFINITIONS Ops.td)

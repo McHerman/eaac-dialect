@@ -28,6 +28,13 @@ using namespace mlir::eaac;
 #include "eaac/Types.cpp.inc"
 
 //===----------------------------------------------------------------------===//
+// TableGen'd attribute definitions
+//===----------------------------------------------------------------------===//
+
+#define GET_ATTRDEF_CLASSES
+#include "eaac/Attrs.cpp.inc"
+
+//===----------------------------------------------------------------------===//
 // TableGen'd op method definitions
 //===----------------------------------------------------------------------===//
 
@@ -114,6 +121,10 @@ void EAACDialect::initialize() {
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "eaac/Types.cpp.inc"
+      >();
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "eaac/Attrs.cpp.inc"
       >();
   addOperations<
 #define GET_OP_LIST

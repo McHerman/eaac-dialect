@@ -14,7 +14,10 @@ add_mlir_library(EAACTransforms
   InsertLoadStore.cpp
   AssignSemaphoreAddresses.cpp
   LegalizeForEaacHw.cpp
+  LowerEaacMemrefToLLVM.cpp
   RiscvKernelToFunction.cpp
+  RiscvKernelToLLVM.cpp
+  SplitLLVMFromEAAC.cpp
 
   DEPENDS
   EAACPassIncGen
@@ -30,4 +33,12 @@ add_mlir_library(EAACTransforms
   MLIRLinalgDialect
   MLIRArithDialect
   MLIRAnalysis
+  MLIRLLVMDialect
+  MLIRLLVMCommonConversion
+  MLIRFuncToLLVM
+  MLIRArithToLLVM
+  MLIRMemRefToLLVM
+  MLIRControlFlowToLLVM
+  MLIRLinalgTransforms
+  MLIRSCFToControlFlow
 )

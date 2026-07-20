@@ -67,6 +67,15 @@ std::unique_ptr<Pass> createLegalizeForEaacHwPass();
 /// Creates pass to outline eaac.riscv_execute regions into func.func ops
 std::unique_ptr<Pass> createRiscvKernelToFunctionPass();
 
+/// Creates pass to lower eaac and memref ops to LLVM dialect
+std::unique_ptr<Pass> createLowerEaacMemrefToLLVMPass();
+
+/// Creates pass to lower eaac.riscv_kernel func.func ops to LLVM dialect
+std::unique_ptr<Pass> createRiscvKernelToLLVMPass();
+
+/// Creates pass to split LLVM dialect content from EAAC dialect content
+std::unique_ptr<Pass> createSplitLLVMFromEAACPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//

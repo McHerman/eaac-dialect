@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "eaac/Dialect.h"
 #include "eaac/Passes.h"
 
 #include "mlir/Analysis/Liveness.h"
@@ -156,6 +157,20 @@ public:
         OpBuilder builder(info.allocOp);
         info.allocOp->setAttr("eaac.offset", builder.getI64IntegerAttr(offset));
         info.allocOp->setAttr("eaac.size", builder.getI64IntegerAttr(size));
+
+        // If LocalStaging already tagged this alloc with a tier, keep the
+        // memref type's memory space in sync with the final offset.
+        if (auto tierAttr =
+                info.allocOp->getAttrOfType<IntegerAttr>("eaac.tier")) {
+          auto alloc = mlir::cast<memref::AllocOp>(info.allocOp);
+          auto oldType = alloc.getType();
+          auto memSpace = eaac::MemSpaceAttr::get(
+              info.allocOp->getContext(), tierAttr.getInt(),
+              static_cast<int64_t>(offset));
+          alloc.getResult().setType(MemRefType::get(
+              oldType.getShape(), oldType.getElementType(),
+              oldType.getLayout(), memSpace));
+        }
       }
     } else {
       llvm::errs() << "Solver failed: allocation not possible\n";
