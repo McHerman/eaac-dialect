@@ -59,20 +59,22 @@ struct UnsupportedOpToRiscvExecute : public RewritePattern {
     if (!parent || !isa<ExecuteOp>(parent))
       return failure();
 
+    auto executeOp = cast<ExecuteOp>(parent);
     std::string sym = "riscv_kernel_" + std::to_string((*counter)++);
 
+    // Replace the whole eaac.execute with an eaac.riscv_execute, moving its
+    // entire body over as-is. One execute region maps to one execution unit,
+    // so a single unsupported op is enough to push the whole region to the
+    // RISC-V core.
+    rewriter.setInsertionPoint(executeOp);
     auto riscvExec = RiscvExecuteOp::create(
-        rewriter, op->getLoc(), StringAttr::get(op->getContext(), sym));
+        rewriter, executeOp.getLoc(),
+        StringAttr::get(executeOp->getContext(), sym));
+    rewriter.inlineRegionBefore(executeOp.getBody(), riscvExec.getBody(),
+                                riscvExec.getBody().end());
+    rewriter.eraseOp(executeOp);
 
-    // Populate the body and clone the op into it. The clone keeps the original
-    // operands, which are captured from the enclosing eaac.execute scope.
-    Block *body = rewriter.createBlock(&riscvExec.getBody());
-    rewriter.setInsertionPointToStart(body);
-    rewriter.clone(*op);
-
-    rewriter.eraseOp(op);
-
-    LLVM_DEBUG(llvm::dbgs() << "[legalize-for-hw] " << op->getName()
+    LLVM_DEBUG(llvm::dbgs() << "[legalize-for-hw] " << executeOp->getName()
                              << " -> " << sym << "\n");
     return success();
   }
