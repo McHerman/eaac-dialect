@@ -141,7 +141,9 @@ private:
                           llvm::DenseMap<Value, Value> &tokenToSem) {
     OpBuilder builder(funcOp);
     auto loc = funcOp.getLoc();
-    auto semTy = SemaphoreType::get(funcOp.getContext());
+    int addr = 0;
+    int gen = 0;
+    auto semTy = SemaphoreType::get(funcOp.getContext(), addr, gen);
 
     llvm::SmallVector<async::ExecuteOp> executeOps;
     funcOp.walk([&](async::ExecuteOp op) { executeOps.push_back(op); });

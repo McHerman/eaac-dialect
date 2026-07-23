@@ -13,8 +13,10 @@ include "eaac/EAAC.td"
 def EAAC_SemaphoreType : TypeDef<EAAC_Dialect, "Semaphore"> {
   let mnemonic = "semaphore";
   let summary = "Handle to a hardware semaphore pair";
+  let parameters = (ins "int64_t":$addr, "int64_t":$gen);
+  let assemblyFormat = "`<` `addr` `=` $addr `,` `gen` `=` $gen `>`";
   let description = [{
-    `!eaac.semaphore` represents a handle to one of the 16 hardware semaphore
+    `!eaac.semaphore` represents a handle a hardware semaphore
     pairs used for producer-consumer synchronization between DMA and compute
     operations.
   }];

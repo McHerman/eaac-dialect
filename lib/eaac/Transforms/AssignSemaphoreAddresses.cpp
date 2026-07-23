@@ -523,6 +523,13 @@ private:
       op->setAttr("eaac.sem_gen",
                   IntegerAttr::get(IndexType::get(ctx), iv.generation));
 
+
+      if (auto alloc = mlir::dyn_cast<eaac::SemAllocOp>(op)) {
+        auto oldType = alloc.getType();
+
+        alloc.getResult().setType(SemaphoreType::get(oldType.getContext(),iv.address,iv.generation));
+      }
+
       /*
       if (iv.onChannel()) {
         // Ring reuse is architecturally safe (drain pipeline guarantees the

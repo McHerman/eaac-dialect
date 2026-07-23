@@ -144,8 +144,10 @@ def SemAllocOp : EAAC_Op<"sem_alloc", [
 
     Example:
     ```mlir
-    %sem = eaac.sem_alloc(%empty, %full)
-    %sem = eaac.sem_alloc(%empty, %full) chains_from(%sem_prev, %sem_other)
+    %sem = eaac.sem_alloc(%empty, %full) : !eaac.semaphore<addr = 0>
+    %sem = eaac.sem_alloc(%empty, %full) chains_from(%sem_prev, %sem_other
+                                        : !eaac.semaphore<addr = 1>, !eaac.semaphore<addr = 2>)
+                                          : !eaac.semaphore<addr = 0>
     ```
   }];
 
@@ -157,9 +159,9 @@ def SemAllocOp : EAAC_Op<"sem_alloc", [
 
   let assemblyFormat = [{
     `(` $empty_count `,` $full_count `)`
-    (`chains_from` `(` $chains_from^ `)`)?
+    (`chains_from` `(` $chains_from^ `:` type($chains_from) `)`)?
     (`event_mode` `=` $event_mode^)?
-    attr-dict
+    attr-dict `:` type($semaphore)
   }];
 }
 
@@ -175,14 +177,14 @@ def SemDeallocOp : EAAC_Op<"sem_dealloc"> {
 
     Example:
     ```mlir
-    eaac.sem_dealloc(%sem) : index
+    eaac.sem_dealloc(%sem) : !eaac.semaphore<addr = 0>
     ```
   }];
 
   let arguments = (ins EAAC_SemaphoreType:$semaphore);
 
   let assemblyFormat = [{
-    `(` $semaphore `)` attr-dict
+    `(` $semaphore `)` attr-dict `:` type($semaphore)
   }];
 }
 
@@ -200,7 +202,7 @@ def ExecuteOp : EAAC_Op<"execute", [NoTerminator]> {
     Example:
     ```mlir
     eaac.execute {
-      eaac.sem_require %sem0, %buf_a : memref<8x8xf32>
+      eaac.sem_require %sem0, %buf_a : !eaac.semaphore<addr = 0>, memref<8x8xf32>
       eaac.dma_start(%src, %buf_a) : memref<8x8xf32>, memref<8x8xf32>
     }
     ```
@@ -231,9 +233,10 @@ def SemRequireOp : EAAC_Op<"sem_require", [
 
     Example:
     ```mlir
-    %ready = eaac.sem_require %sem, %buf : memref<128x128xi8>
-    %ready = eaac.sem_require %sem, %buf chains_from(%sem_a, %sem_b)
-                                                          : memref<128x128xi8>
+    %ready = eaac.sem_require %sem, %buf : !eaac.semaphore<addr = 0>, memref<128x128xi8>
+    %ready = eaac.sem_require %sem, %buf chains_from(%sem_a, %sem_b
+                                        : !eaac.semaphore<addr = 1>, !eaac.semaphore<addr = 2>)
+                                          : !eaac.semaphore<addr = 0>, memref<128x128xi8>
     ```
   }];
 
@@ -243,8 +246,8 @@ def SemRequireOp : EAAC_Op<"sem_require", [
   let results = (outs AnyMemRef:$result);
 
   let assemblyFormat = [{
-    $semaphore `,` $memref (`chains_from` `(` $chains_from^ `)`)?
-    attr-dict `:` type($memref)
+    $semaphore `,` $memref (`chains_from` `(` $chains_from^ `:` type($chains_from) `)`)?
+    attr-dict `:` type($semaphore) `,` type($memref)
   }];
 }
 
@@ -268,7 +271,7 @@ def SemAcquireOp : EAAC_Op<"sem_acquire", [
 
     Example:
     ```mlir
-    %acquired = eaac.sem_acquire %sem, %buf : memref<128x128xi8>
+    %acquired = eaac.sem_acquire %sem, %buf : !eaac.semaphore<addr = 0>, memref<128x128xi8>
     eaac.dma_start(%src, %acquired) : memref<128x128xi8>, memref<128x128xi8>
     ```
   }];
@@ -278,7 +281,7 @@ def SemAcquireOp : EAAC_Op<"sem_acquire", [
   let results = (outs AnyMemRef:$result);
 
   let assemblyFormat = [{
-    $semaphore `,` $memref attr-dict `:` type($memref)
+    $semaphore `,` $memref attr-dict `:` type($semaphore) `,` type($memref)
   }];
 }
 
