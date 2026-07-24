@@ -36,15 +36,6 @@ clean:
 # Rebuild from scratch
 rebuild: clean all
 
-test-buf:
-    {{eaac_opt}} --inline --one-shot-bufferize="bufferize-function-boundaries"  test/input_8_tiny.mlir
-
-test-local-staging:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-local-staging -debug-only=local-staging test/input_8_tiny.mlir
-
-test-insert:
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store test/test_load_insert.mlir
-
 test-almost-full input="riscv-extrasmall":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \
     --inline \
@@ -63,11 +54,11 @@ test-almost-full input="riscv-extrasmall":
     --eaac-riscv-kernel-to-function \
     --eaac-riscv-kernel-to-llvm \
     --eaac-lower-memref-to-llvm \
-    --eaac-lower-memref-to-llvm \
     --eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/out.ll \
     test/{{input}}.mlir
 
-test-riscv input="llvm_test":
+
+test-riscv input="sem_llvm":
     {{eaac_opt}} \
     --convert-linalg-to-loops \
     --lower-affine \
@@ -75,14 +66,35 @@ test-riscv input="llvm_test":
     --convert-arith-to-llvm \
     --convert-cf-to-llvm \
     --convert-func-to-llvm \
-    test/{{input}}.mlir #| \
-    #{{llvm_build_dir}}/bin/mlir-translate --mlir-to-llvmir -o penis.llvm #| \
+    test/{{input}}.mlir | \
+    {{llvm_build_dir}}/bin/mlir-translate --mlir-to-llvmir -o {{input}}.ll
     #clang --target=riscv32 -march=rv32ia_zabha -mabi=ilp32 -mcmodel=medany \
     #-nostdlib -nostartfiles -x ir - -c -o {{input}}.o
 
+test-llvm-sem input="riscv-extrasmall":
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \
+    --inline \
+    --canonicalize \
+    --eaac-insert-load-store \
+    --eaac-local-staging \
+    --eaac-lower-copy-to-dma \
+    --eaac-encode-dependencies \
+    --eaac-find-async-dependency \
+    --eaac-insert-require \
+    --eaac-lower-async-to-semaphore \
+    --eaac-assign-semaphore-addresses \
+    "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
+    --transform-interpreter \
+    --eaac-legalize-for-hw \
+    --eaac-riscv-kernel-to-function \
+    --eaac-riscv-kernel-to-llvm \
+    test/{{input}}.mlir
 
 test-full input="input_8_tiny":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-correct-broadcast --eaac-find-alias-dependency --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac --mlir-print-ir-after=eaac-find-alias-dependency -debug-only=find-alias-dependency test/{{input}}.mlir
+
+test-single input pass:
+    {{eaac_opt}} {{pass}} test/{{input}}.mlir
 
 # Configure and build with -O0 for debugging (separate build dir)
 build-debug:
@@ -97,6 +109,10 @@ build-debug:
 # Run lit/FileCheck regression tests
 test: build
     {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test -v
+
+
+test-only input: build
+    {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test/{{input}} -v
 
 # Run full pipeline and serialize to FlatBuffer binary
 translate input="input_8_tiny":
