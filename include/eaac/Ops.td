@@ -344,7 +344,7 @@ def RiscvExecuteOp : EAAC_Op<"riscv_execute", [NoTerminator]> {
   let arguments = (ins StrAttr:$kernel_sym);
   let regions = (region AnyRegion:$body);
 
-  let assemblyFormat = [{ $kernel_sym attr-dict regions }];
+  let assemblyFormat = [{ $kernel_sym attr-dict-with-keyword regions }];
 }
 
 def ChainOp : EAAC_Op<"chain"> {

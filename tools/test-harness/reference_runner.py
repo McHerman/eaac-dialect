@@ -92,9 +92,12 @@ def parse_print_output(text: str) -> list:
 
 
 def run(src: str, seed: int = SEED) -> tuple:
-    """Instrument, lower, execute, and parse. Returns (inputs, output_matrices)."""
-    rewritten, inputs = instrument.instrument(src, seed)
-    return inputs, parse_print_output(lower_and_run(rewritten))
+    """Instrument, lower, execute, and parse.
+
+    Returns (inputs, output_matrices, output_element_widths).
+    """
+    rewritten, inputs, output_widths = instrument.instrument(src, seed)
+    return inputs, parse_print_output(lower_and_run(rewritten)), output_widths
 
 
 def main():
@@ -110,7 +113,7 @@ def main():
         src = f.read()
 
     print("Running instrument → bufferize → lower → execute...", flush=True)
-    inputs, matrices = run(src)
+    inputs, matrices, output_widths = run(src)
     print(f"Generated {len(inputs)} input tensors, parsed {len(matrices)} result matrices")
 
     if not matrices:
@@ -119,10 +122,10 @@ def main():
     outputs = [
         bundle.make_tensor(
             shape=[len(m), len(m[0])],
-            element_type="i8",
+            element_type=f"i{width}",
             data=[v for row in m for v in row],
         )
-        for m in matrices
+        for m, width in zip(matrices, output_widths)
     ]
 
     out_path = args.output or os.path.splitext(args.input)[0] + ".reference.json"

@@ -14,10 +14,12 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/BitVector.h"
 #include <cstdint>
 
 #define DEBUG_TYPE "eaac-riscv-kernel-to-llvm"
@@ -121,6 +123,123 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
   LogicalResult
   matchAndRewrite(eaac::SemAcquireOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+
+    // The following lowers the acquire operation into a llvm kernel that first reads the state of the semaphroe, acquires and release a block of size stepSize
+
+    auto parentFunc = op->getParentOfType<func::FuncOp>();
+    if (!parentFunc || !parentFunc->hasAttr("eaac.riscv_kernel_impl"))
+      return failure();
+
+    Value semVal = op.getOperand(0);
+    auto semType = dyn_cast<SemaphoreType>(semVal.getType());
+    if (!semType)
+      return failure();
+
+    Location loc = op.getLoc();
+    int64_t semAddr = semType.getAddr();
+    int64_t semGen = semType.getGen();
+
+    int64_t stepSize = op.getStepSize();
+
+    // calculate machine addr
+    ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
+
+    //int genWidth = computeGenWidth(readNumSemaphoreGenerations(moduleOp));
+    int semNumGen = readNumSemaphoreGenerations(moduleOp);
+    int genWidth = computeGenWidth(semNumGen);
+
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "sem num of gen " << semNumGen 
+               << " sem gen widht " << genWidth
+               << " sem gen  " << semGen 
+               << "\n");
+
+    // Semaphoreoffset + semaddr * 8 (2 semaphores of 2 bytes, 2 ports = 8)
+    int64_t semAddressFull = ((semAddr * 4) << genWidth) + semGen;
+    int64_t hwAddressFull = 0x4000 + semAddressFull;
+
+    int64_t semAddressEmpty = ((semAddr * 4 + 1) << genWidth) + semGen;
+    int64_t hwAddressEmpty = 0x4000 + semAddressEmpty;
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "sem addr full " << semAddressFull 
+               << "sem addr empty " << semAddressEmpty 
+               << "\n");
+
+    // RISC-V target is fixed 32-bit, so the index width is hardcoded rather
+    // than pulled from a type converter.
+    Type indexTy = rewriter.getIntegerType(32);
+    Type ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+
+    // Create pointers to empty and full semaphores
+    Value offsetVal = LLVM::ConstantOp::create(rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, hwAddressFull));
+    Value ptrFull = LLVM::IntToPtrOp::create(rewriter, loc, ptrTy, offsetVal);
+
+    Value offsetValEmpty = LLVM::ConstantOp::create(rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, hwAddressEmpty));
+    Value ptrEmpty = LLVM::IntToPtrOp::create(rewriter, loc, ptrTy, offsetValEmpty);
+
+    // create blocks, split original block, entry and acquireblock sits before main ops, loop block sits before acquire, release sits after main ops
+    mlir::Block *entryBlock = op->getBlock();
+    mlir::Block *acquireBlock =
+        rewriter.splitBlock(entryBlock, Block::iterator(op));
+    auto *loopBlock = rewriter.createBlock(acquireBlock);
+
+    rewriter.setInsertionPointToEnd(entryBlock);
+    LLVM::BrOp::create(rewriter, loc, loopBlock);
+
+    rewriter.setInsertionPointToStart(loopBlock);
+
+    auto val = LLVM::LoadOp::create(rewriter,loc,indexTy,ptrEmpty);
+
+    Value stepConst = LLVM::ConstantOp::create(
+        rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, stepSize));
+
+    auto cmp = LLVM::ICmpOp::create(
+        rewriter, loc, LLVM::ICmpPredicate::eq, val, stepConst);
+    LLVM::CondBrOp::create(
+        rewriter, loc, cmp, acquireBlock, ValueRange{}, loopBlock, ValueRange{});
+
+    // Acquire: physically first in acquireBlock, i.e. before the main op.
+    rewriter.setInsertionPointToStart(acquireBlock);
+
+    Value stepConstN = LLVM::ConstantOp::create(
+        rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, -stepSize));
+
+    auto acquire = LLVM::AtomicRMWOp::create(
+        rewriter, loc, LLVM::AtomicBinOp::add, ptrEmpty, stepConstN,
+        LLVM::AtomicOrdering::acquire);
+
+    // Release: inserted right before acquireBlock's terminator. Since the
+    // terminator (e.g. func.return) is always last, this runs after
+    // everything else in the block, including the main computation, without
+    // needing to know where that computation ends.
+    rewriter.setInsertionPoint(acquireBlock->getTerminator());
+
+    auto release = LLVM::AtomicRMWOp::create(
+        rewriter, loc, LLVM::AtomicBinOp::add, ptrFull, stepConst,
+        LLVM::AtomicOrdering::release);
+
+    // Acquiring is a synchronization handshake; the memref value itself
+    // passes through unchanged once the wait loop is satisfied.
+    rewriter.replaceOp(op, adaptor.getMemref());
+
+    return success();
+  }
+};
+
+struct ConvertEAACRequire : OpConversionPattern<eaac::SemRequireOp> {
+  using Base::Base;
+
+  LogicalResult
+  matchAndRewrite(eaac::SemRequireOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    // Does mostly the same as the acquire, but reads from different addresses 
+    auto parentFunc = op->getParentOfType<func::FuncOp>();
+    if (!parentFunc || !parentFunc->hasAttr("eaac.riscv_kernel_impl"))
+      return failure();
+
     Value semVal = op.getOperand(0);
     auto semType = dyn_cast<SemaphoreType>(semVal.getType());
     if (!semType)
@@ -137,34 +256,23 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
 
     int genWidth = computeGenWidth(readNumSemaphoreGenerations(moduleOp));
 
-    int64_t hwAddressFull = 0x4000 + ((semAddr * 4) << genWidth) + semGen;
-    int64_t hwAddressEmpty = 0x4000 + ((semAddr * 4) << genWidth) + semGen + 2;
+    // Semaphoreoffset + semaddr * 8 (2 semaphores of 2 bytes, 2 ports = 8) added port offset
+    int64_t hwAddressFull = 0x4000 + ((semAddr * 4 + 2) << genWidth) + semGen;
+    int64_t hwAddressEmpty = 0x4000 + ((semAddr * 4 + 2 + 1) << genWidth) + semGen;
 
     // RISC-V target is fixed 32-bit, so the index width is hardcoded rather
     // than pulled from a type converter.
     Type indexTy = rewriter.getIntegerType(32);
     Type ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
 
-    //Value offsetVal = rewriter.create<LLVM::ConstantOp>(
-    //    loc, indexTy, rewriter.getIntegerAttr(indexTy, hwAddress));
-
+    // Create pointers to empty and full semaphores
     Value offsetVal = LLVM::ConstantOp::create(rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, hwAddressFull));
     Value ptrFull = LLVM::IntToPtrOp::create(rewriter, loc, ptrTy, offsetVal);
 
-    Value offsetValEmpty = LLVM::ConstantOp::create(
-        rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, hwAddressEmpty));
+    Value offsetValEmpty = LLVM::ConstantOp::create(rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, hwAddressEmpty));
     Value ptrEmpty = LLVM::IntToPtrOp::create(rewriter, loc, ptrTy, offsetValEmpty);
 
-    // Split right before op instead of inserting new blocks before the
-    // current block: the current block may be the function's entry block,
-    // and createBlock(block) would insert ahead of it, demoting it out of
-    // first position and losing its argument list.
-    //
-    // acquireBlock keeps everything that followed op (the main computation
-    // and the terminator), so it doubles as both "right after the wait loop"
-    // (insertion at its start) and "right after the main computation"
-    // (insertion right before its terminator) — no extra blocks needed for
-    // the release side, since that's a placement problem, not a branching one.
+    // create blocks, split original block, entry and acquireblock sits before main ops, loop block sits before acquire, release sits after main ops
     mlir::Block *entryBlock = op->getBlock();
     mlir::Block *acquireBlock =
         rewriter.splitBlock(entryBlock, Block::iterator(op));
@@ -191,6 +299,7 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
     Value stepConstN = LLVM::ConstantOp::create(
         rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, -stepSize));
 
+    // We acquite the empty semaphore
     auto acquire = LLVM::AtomicRMWOp::create(
         rewriter, loc, LLVM::AtomicBinOp::add, ptrFull, stepConstN,
         LLVM::AtomicOrdering::acquire);
@@ -199,6 +308,9 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
     // terminator (e.g. func.return) is always last, this runs after
     // everything else in the block, including the main computation, without
     // needing to know where that computation ends.
+
+
+    // We release into the full semaphore
     rewriter.setInsertionPoint(acquireBlock->getTerminator());
 
     auto release = LLVM::AtomicRMWOp::create(
@@ -209,26 +321,74 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
     // passes through unchanged once the wait loop is satisfied.
     rewriter.replaceOp(op, adaptor.getMemref());
 
-    // op was the only user of the semaphore-typed argument: its static
-    // addr/gen were read off the type above, but the runtime value itself
-    // was never threaded through. Once op is gone the argument is dead, so
-    // drop it from the kernel's signature now while we still know its index.
-    if (auto blockArg = dyn_cast<BlockArgument>(semVal)) {
-      if (blockArg.use_empty()) {
-        if (auto funcOp = dyn_cast_or_null<FunctionOpInterface>(
-                blockArg.getOwner()->getParentOp())) {
-          rewriter.modifyOpInPlace(funcOp, [&] {
-            (void)funcOp.eraseArgument(blockArg.getArgNumber());
-          });
-        }
+    return success();
+  }
+};
+
+// Cleans up function signature and call sites.
+struct FixFunctionSignature : OpRewritePattern<func::FuncOp> {
+  using Base::Base;
+
+  LogicalResult matchAndRewrite(func::FuncOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->hasAttr("eaac.riscv_staging_kernel"))
+      return failure();
+
+    func::CallOp implCall;
+    for (Operation &bodyOp : op.getFunctionBody().front())
+      if (auto call = dyn_cast<func::CallOp>(bodyOp)) {
+        implCall = call;
+        break;
+      }
+    if (!implCall)
+      return failure();
+
+    auto impl = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+        implCall, implCall.getCalleeAttr());
+    if (!impl)
+      return failure();
+
+    llvm::BitVector deadArgs(impl.getNumArguments());
+    for (BlockArgument arg : impl.getArguments())
+      if (isa<SemaphoreType>(arg.getType()) && arg.use_empty())
+        deadArgs.set(arg.getArgNumber());
+    if (deadArgs.none())
+      return failure();
+
+    // Drop the matching operand from every call site of the wrapper (e.g.
+    // from @main) before the wrapper's signature changes underneath them.
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    if (auto uses = SymbolTable::getSymbolUses(op, module)) {
+      for (SymbolTable::SymbolUse use : *uses) {
+        auto callOp = dyn_cast<func::CallOp>(use.getUser());
+        if (!callOp)
+          continue;
+        SmallVector<Value> keptOperands;
+        for (auto [idx, operand] : llvm::enumerate(callOp.getOperands()))
+          if (!deadArgs.test(idx))
+            keptOperands.push_back(operand);
+        rewriter.modifyOpInPlace(
+            callOp, [&] { callOp.getOperandsMutable().assign(keptOperands); });
       }
     }
 
+    // Same for the wrapper's own call into the impl.
+    SmallVector<Value> keptCallOperands;
+    for (auto [idx, operand] : llvm::enumerate(implCall.getOperands()))
+      if (!deadArgs.test(idx))
+        keptCallOperands.push_back(operand);
+    rewriter.modifyOpInPlace(implCall, [&] {
+      implCall.getOperandsMutable().assign(keptCallOperands);
+    });
+
+    rewriter.modifyOpInPlace(op, [&] { (void)op.eraseArguments(deadArgs); });
+    rewriter.modifyOpInPlace(impl,
+                              [&] { (void)impl.eraseArguments(deadArgs); });
+
     return success();
   }
-
-
 };
+
 
 
 class RiscvKernelToLLVMPass
@@ -248,20 +408,33 @@ public:
         return signalPassFailure();
     }
 
-    // Stage 0.5: Lower eaac.sem_acquire to a hardware wait-loop. These ops
-    // live in the enclosing eaac.execute blocks (module-wide, not inside the
-    // outlined kernels), so this is its own conversion over the whole module.
-    // markUnknownOpDynamicallyLegal keeps every other op untouched — arith,
-    // memref, etc. in host code must not be swept into LLVM here.
+    // Stage 0.5: Lower eaac.sem_acquire/sem_require to a hardware wait-loop.
     {
+      auto isInRiscvKernelImpl = [](Operation *op) {
+        auto func = op->getParentOfType<func::FuncOp>();
+        return !(func && func->hasAttr("eaac.riscv_kernel_impl"));
+      };
       ConversionTarget semTarget(*ctx);
-      semTarget.addIllegalOp<eaac::SemAcquireOp>();
+      semTarget.addDynamicallyLegalOp<eaac::SemAcquireOp>(isInRiscvKernelImpl);
+      semTarget.addDynamicallyLegalOp<eaac::SemRequireOp>(isInRiscvKernelImpl);
       semTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
       RewritePatternSet semPatterns(ctx);
       semPatterns.add<ConvertEAACAcquire>(ctx);
+      semPatterns.add<ConvertEAACRequire>(ctx);
       if (failed(applyPartialConversion(module, semTarget,
                                         std::move(semPatterns))))
+        return signalPassFailure();
+    }
+
+    // Stage 0.6: The sem_acquire/sem_require ops are gone now, so their
+    // semaphore arguments are dead. Remove them from the impl signature, the
+    // wrapper's call into the impl, the wrapper signature, and any remaining
+    // callers of the wrapper.
+    {
+      RewritePatternSet fixSigPatterns(ctx);
+      fixSigPatterns.add<FixFunctionSignature>(ctx);
+      if (failed(applyPatternsGreedily(module, std::move(fixSigPatterns))))
         return signalPassFailure();
     }
 
@@ -342,13 +515,6 @@ public:
     arith::populateArithToLLVMConversionPatterns(typeConverter, llvmPatterns);
     populateFinalizeMemRefToLLVMConversionPatterns(typeConverter, llvmPatterns);
     cf::populateControlFlowToLLVMConversionPatterns(typeConverter, llvmPatterns);
-
-
-
-
-
-
-
     populateFuncToLLVMConversionPatterns(typeConverter, llvmPatterns);
 
     FrozenRewritePatternSet frozen(std::move(llvmPatterns));

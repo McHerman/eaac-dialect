@@ -23,6 +23,14 @@ ELEMENT_TYPES: dict[str, ElementTypeSpec] = {
         random_bytes=lambda rng, n: bytes(rng.randint(0, 255) for _ in range(n)),
         decode=lambda raw: list(raw),
     ),
+    "i32": ElementTypeSpec(
+        name="i32",
+        byte_width=4,
+        random_bytes=lambda rng, n: bytes(
+            b for _ in range(n) for b in rng.randint(0, 2**32 - 1).to_bytes(4, "little")
+        ),
+        decode=lambda raw: list(struct.unpack(f"<{len(raw) // 4}i", raw)),
+    ),
     # To add e.g. i16: byte_width=2, random_bytes generating 2*n bytes,
     # decode via struct.unpack(f"<{n}h", raw).
 }

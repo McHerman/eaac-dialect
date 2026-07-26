@@ -52,43 +52,11 @@ test-almost-full input="riscv-extrasmall":
     --transform-interpreter \
     --eaac-legalize-for-hw \
     --eaac-riscv-kernel-to-function \
-    --eaac-riscv-kernel-to-llvm \
-    --eaac-lower-memref-to-llvm \
-    --eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/out.ll \
     test/{{input}}.mlir
-
-
-test-riscv input="sem_llvm":
-    {{eaac_opt}} \
-    --convert-linalg-to-loops \
-    --lower-affine \
-    --convert-scf-to-cf \
-    --convert-arith-to-llvm \
-    --convert-cf-to-llvm \
-    --convert-func-to-llvm \
-    test/{{input}}.mlir | \
-    {{llvm_build_dir}}/bin/mlir-translate --mlir-to-llvmir -o {{input}}.ll
-    #clang --target=riscv32 -march=rv32ia_zabha -mabi=ilp32 -mcmodel=medany \
-    #-nostdlib -nostartfiles -x ir - -c -o {{input}}.o
-
-test-llvm-sem input="riscv-extrasmall":
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \
-    --inline \
-    --canonicalize \
-    --eaac-insert-load-store \
-    --eaac-local-staging \
-    --eaac-lower-copy-to-dma \
-    --eaac-encode-dependencies \
-    --eaac-find-async-dependency \
-    --eaac-insert-require \
-    --eaac-lower-async-to-semaphore \
-    --eaac-assign-semaphore-addresses \
-    "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
-    --transform-interpreter \
-    --eaac-legalize-for-hw \
-    --eaac-riscv-kernel-to-function \
-    --eaac-riscv-kernel-to-llvm \
-    test/{{input}}.mlir
+    #--eaac-riscv-kernel-to-llvm \
+    #--eaac-lower-memref-to-llvm \
+    #--eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
+    #-debug-only=eaac-riscv-kernel-to-llvm \
 
 test-full input="input_8_tiny":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-correct-broadcast --eaac-find-alias-dependency --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac --mlir-print-ir-after=eaac-find-alias-dependency -debug-only=find-alias-dependency test/{{input}}.mlir
@@ -116,8 +84,26 @@ test-only input: build
 
 # Run full pipeline and serialize to FlatBuffer binary
 translate input="input_8_tiny":
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-correct-broadcast --eaac-find-alias-dependency --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac test/{{input}}.mlir | {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{input}}.eaac
-    #flatc --json --raw-binary include/eaac/Target/eaac_program.fbs -- {{input}}.eaac
+    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \
+    --inline \
+    --canonicalize \
+    --eaac-insert-load-store \
+    --eaac-local-staging \
+    --eaac-lower-copy-to-dma \
+    --eaac-encode-dependencies \
+    --eaac-find-async-dependency \
+    --eaac-insert-require \
+    --eaac-lower-async-to-semaphore \
+    --eaac-assign-semaphore-addresses \
+    "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
+    --transform-interpreter \
+    --eaac-legalize-for-hw \
+    --eaac-riscv-kernel-to-function \
+    --eaac-riscv-kernel-to-llvm \
+    --eaac-lower-memref-to-llvm \
+    --eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
+    test/{{input}}.mlir | \
+    {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{input}}.eaac
     python tools/test-harness/reference_runner.py test/{{input}}.mlir -o {{input}}.reference.json
     cp {{input}}.eaac ../../hardware/ATAN/test
     cp {{input}}.reference.json ../../hardware/ATAN/test

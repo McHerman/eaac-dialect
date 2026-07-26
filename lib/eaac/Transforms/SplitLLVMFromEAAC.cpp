@@ -281,13 +281,29 @@ public:
       if (fn->hasAttr("eaac.riscv_staging_kernel_no_memref"))
         entryPointNames.insert(fn.getSymName());
 
-    // Gather callops in order
+    // Gather callops in order. These calls are about to dangle: their callee
+    // is moved into a standalone llvmModule below, translated to real LLVM
+    // IR, and written out to its own file, so the calling function no longer
+    // shares a symbol table with it. Swap each one for an eaac.riscv_execute
+    // marker (empty body) that just documents "a RISC-V kernel runs here" for
+    // anyone reading the remaining eaac-side IR.
     SmallVector<StringRef> callOrder;
+    SmallVector<LLVM::CallOp> callsToReplace;
     module.walk([&](LLVM::CallOp callOp) {
       if (auto callee = callOp.getCallee())
-        if (entryPointNames.contains(*callee))
+        if (entryPointNames.contains(*callee)) {
           callOrder.push_back(*callee);
+          callsToReplace.push_back(callOp);
+        }
     });
+
+    for (LLVM::CallOp callOp : callsToReplace) {
+      OpBuilder markerBuilder(callOp);
+      auto marker = markerBuilder.create<RiscvExecuteOp>(callOp.getLoc(),
+                                                          *callOp.getCallee());
+      markerBuilder.createBlock(&marker.getBody());
+      callOp.erase();
+    }
 
     // Create llvm module
     OpBuilder builder(ctx);
