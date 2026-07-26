@@ -195,8 +195,12 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
     Value stepConst = LLVM::ConstantOp::create(
         rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, stepSize));
 
+    //auto cmp = LLVM::ICmpOp::create(
+    //    rewriter, loc, LLVM::ICmpPredicate::eq, val, stepConst);
+    
     auto cmp = LLVM::ICmpOp::create(
-        rewriter, loc, LLVM::ICmpPredicate::eq, val, stepConst);
+        rewriter, loc, LLVM::ICmpPredicate::uge, val, stepConst);
+
     LLVM::CondBrOp::create(
         rewriter, loc, cmp, acquireBlock, ValueRange{}, loopBlock, ValueRange{});
 
@@ -288,8 +292,12 @@ struct ConvertEAACRequire : OpConversionPattern<eaac::SemRequireOp> {
     Value stepConst = LLVM::ConstantOp::create(
         rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, stepSize));
 
+    //auto cmp = LLVM::ICmpOp::create(
+    //    rewriter, loc, LLVM::ICmpPredicate::eq, val, stepConst);
+    
     auto cmp = LLVM::ICmpOp::create(
-        rewriter, loc, LLVM::ICmpPredicate::eq, val, stepConst);
+        rewriter, loc, LLVM::ICmpPredicate::uge, val, stepConst);
+
     LLVM::CondBrOp::create(
         rewriter, loc, cmp, acquireBlock, ValueRange{}, loopBlock, ValueRange{});
 
