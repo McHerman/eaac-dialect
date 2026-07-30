@@ -392,7 +392,21 @@ private:
         pairs.push_back({reader, writer, a.memref});
       }
     }
-    return pairs;
+
+    // Ties chaining to latest writer instead of all writers in scope
+    llvm::DenseMap<Operation *, size_t> bestForWriter;
+    llvm::SmallVector<AliasPair> deduped;
+    for (AliasPair p : pairs) {
+      auto [it, inserted] = bestForWriter.try_emplace(p.writer.getOperation(), deduped.size());
+      if (inserted) {
+        deduped.push_back(p);
+        continue;
+      }
+      AliasPair &existing = deduped[it->second];
+      if (opTime.lookup(p.reader) > opTime.lookup(existing.reader))
+        existing = p;
+    }
+    return deduped;
   }
 };
 
