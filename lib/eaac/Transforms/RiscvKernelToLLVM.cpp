@@ -190,14 +190,15 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
 
     rewriter.setInsertionPointToStart(loopBlock);
 
-    auto val = LLVM::LoadOp::create(rewriter,loc,indexTy,ptrEmpty);
+    auto val = LLVM::LoadOp::create(rewriter, loc, indexTy, ptrEmpty,
+                                     /*alignment=*/0, /*isVolatile=*/true);
 
     Value stepConst = LLVM::ConstantOp::create(
         rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, stepSize));
 
     //auto cmp = LLVM::ICmpOp::create(
     //    rewriter, loc, LLVM::ICmpPredicate::eq, val, stepConst);
-    
+
     auto cmp = LLVM::ICmpOp::create(
         rewriter, loc, LLVM::ICmpPredicate::uge, val, stepConst);
 
@@ -287,14 +288,15 @@ struct ConvertEAACRequire : OpConversionPattern<eaac::SemRequireOp> {
 
     rewriter.setInsertionPointToStart(loopBlock);
 
-    auto val = LLVM::LoadOp::create(rewriter,loc,indexTy,ptrFull);
+    auto val = LLVM::LoadOp::create(rewriter, loc, indexTy, ptrFull,
+                                     /*alignment=*/0, /*isVolatile=*/true);
 
     Value stepConst = LLVM::ConstantOp::create(
         rewriter, loc, indexTy, rewriter.getIntegerAttr(indexTy, stepSize));
 
     //auto cmp = LLVM::ICmpOp::create(
     //    rewriter, loc, LLVM::ICmpPredicate::eq, val, stepConst);
-    
+
     auto cmp = LLVM::ICmpOp::create(
         rewriter, loc, LLVM::ICmpPredicate::uge, val, stepConst);
 
