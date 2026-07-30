@@ -82,7 +82,6 @@ test: build
 test-only input: build
     {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test/{{input}} -v
 
-# Run full pipeline and serialize to FlatBuffer binary
 translate input="input_8_tiny":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \
     --inline \
@@ -104,11 +103,13 @@ translate input="input_8_tiny":
     --eaac-riscv-kernel-to-llvm \
     --eaac-lower-memref-to-llvm \
     --eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
-    test/{{input}}.mlir | \
-    {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{input}}.eaac
+    test/{{input}}.mlir -o /tmp/{{input}}.eaac-stage.mlir
+    {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{input}}.eaac /tmp/{{input}}.eaac-stage.mlir
     python tools/test-harness/reference_runner.py test/{{input}}.mlir -o {{input}}.reference.json
     cp {{input}}.eaac ../../hardware/ATAN/test
     cp {{input}}.reference.json ../../hardware/ATAN/test
+    mkdir -p ../../hardware/ATAN/test/{{input}}
+    cp {{input}}.ll ../../hardware/ATAN/test/{{input}}/{{input}}.ll
 
 # Convert a .eaac flatbuffer binary to JSON using the schema
 to-json input="input_8_tiny":
