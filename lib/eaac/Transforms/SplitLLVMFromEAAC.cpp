@@ -325,6 +325,11 @@ public:
       builder.create<LLVM::CallOp>(module.getLoc(), TypeRange{}, callee, ValueRange{});
     builder.create<LLVM::ReturnOp>(module.getLoc(), ValueRange{});
 
+    // Address 0 in llvm is ptr null, since that address is actually used by eaad, we have to set a flag
+    for (LLVM::LLVMFuncOp fn : llvmModule.getOps<LLVM::LLVMFuncOp>())
+      fn.setPassthroughAttr(
+          ArrayAttr::get(ctx, StringAttr::get(ctx, "null_pointer_is_valid")));
+
     llvm::LLVMContext llvmCtx;
     std::unique_ptr<llvm::Module> translated =
         translateModuleToLLVMIR(llvmModule, llvmCtx);

@@ -93,6 +93,8 @@ translate input="input_8_tiny":
     --eaac-encode-dependencies \
     --eaac-find-async-dependency \
     --eaac-insert-require \
+    --eaac-correct-broadcast \
+    --eaac-find-alias-dependency \
     --eaac-lower-async-to-semaphore \
     --eaac-assign-semaphore-addresses \
     "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
