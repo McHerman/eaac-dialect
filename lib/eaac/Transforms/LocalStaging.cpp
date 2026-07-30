@@ -85,6 +85,9 @@ public:
   // that just died and the next buffer placed at the same offset, so anti-
   // aliasing through allocator reuse becomes impossible within R steps.
   int64_t reuseGuard = 0;
+  // Required byte alignment for every buffer placed in this tier. Set from
+  // the module's DLTI 'bus_size' entry; defaults to 1 (no alignment).
+  int64_t alignment = 1;
 
   llvm::SmallVector<Buffer> buffers;
   llvm::SmallVector<LiveInterval> active;
@@ -93,9 +96,9 @@ public:
 
   MemoryTier() : capacity(0), level(0) {}
   MemoryTier(std::string name, int64_t capacity, int64_t level,
-             int64_t reuseGuard = 0)
+             int64_t reuseGuard = 0, int64_t alignment = 1)
       : name(std::move(name)), capacity(capacity), level(level),
-        reuseGuard(reuseGuard) {}
+        reuseGuard(reuseGuard), alignment(alignment) {}
 
   /// Remove and return a buffer by its id. Returns nullptr if not found.
   std::optional<Buffer> removeBuffer(llvm::StringRef bufferId) {
@@ -207,6 +210,33 @@ getIntervalsFromSubset(const std::vector<long> &subset,
   }
   return result;
 }
+
+
+static std::optional<int64_t> getAlignment(ModuleOp module) {
+  auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
+      module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
+  if (!sysSpec)
+    return std::nullopt;
+  auto deviceId = StringAttr::get(module.getContext(), "EAAC");
+  std::optional<TargetDeviceSpecInterface> deviceSpec =
+      sysSpec.getDeviceSpecForDeviceID(deviceId);
+  if (!deviceSpec)
+    return std::nullopt;
+  for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
+    auto key = dyn_cast<StringAttr>(entry.getKey());
+    if (!key || key.getValue() != "bus_size")
+      continue;
+    auto intAttr = dyn_cast<IntegerAttr>(entry.getValue());
+    if (!intAttr) {
+      module.emitWarning() << "'bus_size': expected i64, got "
+                           << entry.getValue() << "; ignoring";
+      return std::nullopt;
+    }
+    return intAttr.getInt();
+  }
+  return std::nullopt;
+}
+
 
 /// Try to allocate a buffer in a tier. Returns solution if successful.
 std::optional<minimalloc::Solution>
@@ -509,7 +539,7 @@ std::optional<SpillResult> computeSpill(const LiveInterval &cur,
 
   // Spill buffer always covers [spillStart, nextUse)
   Buffer spillBuffer(spillId, Interval(spillStart, *nextUse),
-                     activeInterval->size, 1);
+                     activeInterval->size, tier.alignment);
   LLVM_DEBUG(llvm::dbgs() << "[computeSpill] spill=[" << spillStart << ", "
                           << *nextUse << ")\n");
 
@@ -661,7 +691,8 @@ bool allocateAtTier(LiveInterval &cur, size_t tierIdx,
                           << cur.id << " [" << cur.start << ", " << cur.end
                           << ") size=" << cur.size << "\n");
 
-  Buffer buffer(cur.id, Interval(cur.start, cur.end), cur.size, 1);
+  Buffer buffer(cur.id, Interval(cur.start, cur.end), cur.size,
+               tier.alignment);
 
   auto solution = tryAllocate(tier, buffer, solver);
   if (solution) {
@@ -733,10 +764,12 @@ void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
 
 /// Run linear scan memory allocation with recursive spilling across N tiers.
 /// `reuseGuard` is the address-reuse padding (in liveness time units) applied
-/// uniformly to every tier; see MemoryTier::reuseGuard.
+/// uniformly to every tier; see MemoryTier::reuseGuard. `alignment` is the
+/// required byte alignment applied uniformly to every buffer.
 llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
                                   llvm::ArrayRef<int64_t> tierCapacities,
-                                  int64_t reuseGuard = 0) {
+                                  int64_t reuseGuard = 0,
+                                  int64_t alignment = 1) {
 
   LLVM_DEBUG({
     llvm::dbgs() << "\n=== ALLOCATION START ===\nIntervals ("
@@ -755,7 +788,7 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
   for (auto [i, cap] : llvm::enumerate(tierCapacities)) {
     int64_t level = static_cast<int64_t>(i);
     std::string name = "Tier " + std::to_string(level);
-    tiers.emplace_back(std::move(name), cap, level, reuseGuard);
+    tiers.emplace_back(std::move(name), cap, level, reuseGuard, alignment);
   }
 
   // Initialize minimalloc solver
@@ -980,8 +1013,9 @@ public:
       problem.add(interval);
     }
 
+    int64_t alignment = getAlignment(getOperation()).value_or(1);
     auto map = allocate(problem, settings->tierCapacities,
-                        settings->reuseGuard);
+                        settings->reuseGuard, alignment);
 
     // Emit IR for the planned chains using the offsets the allocator produced.
     emitStagingChains(chains, intervals, map);
