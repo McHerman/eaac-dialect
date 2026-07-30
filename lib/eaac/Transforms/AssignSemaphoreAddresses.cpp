@@ -332,6 +332,10 @@ private:
     llvm::SmallVector<SemInterval *> active;
     int64_t hwm = 0;
     llvm::SmallVector<int64_t> lastEnd(scanCap, -1);
+    // Parallel to lastEnd: the semaphore SSA value that last occupied each
+    // address. Used to chain a reused address's new sem_alloc to its
+    // predecessor's completion (see the reuse-safety comment below).
+    llvm::SmallVector<Value> lastSem(scanCap, Value());
 
     for (auto &cur : intervals) {
       /*
@@ -376,7 +380,16 @@ private:
       if (freeAddr >= 0) {
         cur.address = freeAddr;
         cur.generation = takeGeneration(freeAddr);
+
+        // Inserts chain between last and current generation
+        if (lastSem[freeAddr]) {
+          cur.allocOp->insertOperands(cur.allocOp->getNumOperands(),
+                                      lastSem[freeAddr]);
+          cur.reused = true;
+        }
+
         lastEnd[freeAddr] = cur.end;
+        lastSem[freeAddr] = cur.semaphore;
         active.push_back(&cur);
         LLVM_DEBUG(llvm::dbgs() << "  assigned addr=" << freeAddr
                                 << " gen=" << cur.generation << " to sem @"
@@ -414,6 +427,10 @@ private:
       cur.address = victim->address;
       cur.generation = takeGeneration(cur.address);
       cur.reused = true;
+      
+      // Inserts chain between current and previous generation
+      cur.allocOp->insertOperands(cur.allocOp->getNumOperands(),
+                                  victim->semaphore);
 
       LLVM_DEBUG(llvm::dbgs()
                  << "  REUSE: addr=" << cur.address
@@ -428,6 +445,8 @@ private:
           break;
         }
       }
+      lastEnd[cur.address] = cur.end;
+      lastSem[cur.address] = cur.semaphore;
     }
     return success();
   }
