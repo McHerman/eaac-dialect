@@ -70,7 +70,8 @@ private:
       if (isa<DmaStartOp>(op) ||
           (isa<linalg::LinalgOp>(op) && !isa<linalg::FillOp>(op)) ||
           (isa<LoadOp>(op)) ||
-          (isa<StoreOp>(op)))
+          (isa<StoreOp>(op)) ||
+          (isa<MatmulOp>(op)))
         targetOps.push_back(op);
     });
 
