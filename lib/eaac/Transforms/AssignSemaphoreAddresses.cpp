@@ -243,11 +243,7 @@ private:
       llvm::dbgs() << "Semaphore intervals (" << intervals.size() << "):\n";
       for (const auto &iv : intervals) {
         llvm::dbgs() << "  sem @" << iv.start << "-" << iv.end;
-        /*
-        if (iv.onChannel())
-          llvm::dbgs() << " [" << iv.channelName << " idx=" << iv.channelIdx
-                       << "/" << iv.channelDepth << "]";
-        */
+
         llvm::dbgs() << "\n";
       }
     });
@@ -274,60 +270,8 @@ private:
       counter++;
       return gen;
     };
-    /*
-    // Discover the channels actually used in this function (subset of what
-    // the analysis surfaced module-wide), then reserve a ring per channel at
-    // the top of the address space. Sort by name for deterministic layout.
-    llvm::SmallVector<ChannelSpec> usedChannels;
-    {
-      llvm::StringMap<int64_t> depthByName;
-      for (const auto &iv : intervals)
-        if (iv.onChannel())
-          depthByName.try_emplace(iv.channelName, iv.channelDepth);
-      for (auto &kv : depthByName)
-        usedChannels.push_back({kv.first(), kv.second});
-      llvm::sort(usedChannels,
-                 [](const ChannelSpec &a, const ChannelSpec &b) {
-                   return a.name < b.name;
-                 });
-    }
 
-    llvm::StringMap<int64_t> channelBase;
-    int64_t cursor = numPairs;
-    for (const auto &ch : usedChannels) {
-      cursor -= ch.depth;
-      channelBase[ch.name] = cursor;
-    }
-    const int64_t scanCap = cursor;
-
-    if (scanCap < 0) {
-      intervals.front().allocOp->emitError("num_semaphore_pairs (")
-          << numPairs
-          << ") too small to reserve channel rings totalling " << (numPairs - scanCap)
-          << " addresses";
-      return failure();
-    }
-    */
     const int64_t scanCap = numPairs;
-
-    // Pre-assign channel-bound intervals. No liveness/eviction check: the
-    // architectural drain depth K guarantees the previous slot occupant is
-    // done by the time we wrap around.
-    /*
-    for (auto &iv : intervals) {
-      if (!iv.onChannel())
-        continue;
-      const int64_t base = channelBase[iv.channelName];
-      iv.address = base + (iv.channelIdx % iv.channelDepth);
-      iv.reused = iv.channelIdx >= iv.channelDepth;
-      iv.generation = takeGeneration(iv.address);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "  channel-ring(" << iv.channelName
-                 << "): addr=" << iv.address << " gen=" << iv.generation
-                 << " for sem @" << iv.start << "-" << iv.end
-                 << " (idx=" << iv.channelIdx << ")\n");
-    }
-    */
 
     llvm::SmallVector<SemInterval *> active;
     int64_t hwm = 0;
@@ -338,10 +282,6 @@ private:
     llvm::SmallVector<Value> lastSem(scanCap, Value());
 
     for (auto &cur : intervals) {
-      /*
-      if (cur.onChannel())
-        continue; // already placed in a ring
-      */
 
       // Expire finished intervals.
       llvm::SmallVector<SemInterval *> stillActive;
@@ -423,6 +363,9 @@ private:
             << ")";
         return failure();
       }
+      
+      
+      LLVM_DEBUG(llvm::dbgs() << "reused live semaphore address " << "\n");
 
       cur.address = victim->address;
       cur.generation = takeGeneration(cur.address);
@@ -549,13 +492,6 @@ private:
         alloc.getResult().setType(SemaphoreType::get(oldType.getContext(),iv.address,iv.generation));
       }
 
-      /*
-      if (iv.onChannel()) {
-        // Ring reuse is architecturally safe (drain pipeline guarantees the
-        // previous slot occupant is done), so no warning here.
-        op->setAttr("eaac.sem_ring", StringAttr::get(ctx, iv.channelName));
-      } else
-      */
       if (iv.reused) {
         op->setAttr("eaac.sem_reused", UnitAttr::get(ctx));
         op->emitWarning("semaphore address reused due to register pressure — "
