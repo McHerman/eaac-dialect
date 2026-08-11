@@ -23,3 +23,5 @@ add_public_tablegen_target(EAACPassIncGen)
 add_subdirectory(Target)
 
 add_subdirectory(Transform)
+
+add_subdirectory(IR)

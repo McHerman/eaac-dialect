@@ -32,4 +32,43 @@ def EAAC_MemSpaceAttr : AttrDef<EAAC_Dialect, "MemSpace"> {
   let assemblyFormat = "`<` `tier` `=` $tier `,` `offset` `=` $offset `>`";
 }
 
+class EAAC_Funit_Type<string name, string typeMnemonic, list<Trait> traits = []>
+    : TypeDef<EAAC_Dialect, name, traits> {
+  let mnemonic = typeMnemonic;
+
+  let parameters = (ins "unsigned":$pipeline_depth);
+  let assemblyFormat = "`<` $pipeline_depth `>`";
+
+  let genMnemonicAlias = 1;
+}
+
+def Load_Type : EAAC_Funit_Type<"Load", "load"> {
+  let summary = "Load unit";
+  let description = [{
+    EAAC load unit
+  }];
+}
+
+def Store_Type : EAAC_Funit_Type<"Store", "store"> {
+  let summary = "Store unit";
+  let description = [{
+    EAAC load unit
+  }];
+}
+
+
+def RISC_Type : EAAC_Funit_Type<"RISC", "risc"> {
+  let summary = "Store unit";
+  let description = [{
+    EAAC RISC-V unit
+  }];
+}
+
+def GEMM_Type : EAAC_Funit_Type<"GEMM", "gemm"> {
+  let summary = "GEMM unit computing matmuls";
+  let description = [{
+    Capable of computing linalg.matmul operations
+  }];
+}
+
 #endif // EAAC_TYPES
