@@ -46,6 +46,8 @@ test-almost-full input="riscv-extrasmall":
     --eaac-encode-dependencies \
     --eaac-find-async-dependency \
     --eaac-insert-require \
+    --eaac-correct-broadcast \
+    --eaac-find-alias-dependency \
     --eaac-lower-async-to-semaphore \
     --eaac-assign-semaphore-addresses \
     "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
@@ -56,7 +58,6 @@ test-almost-full input="riscv-extrasmall":
     #--eaac-riscv-kernel-to-llvm \
     #--eaac-lower-memref-to-llvm \
     #--eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
-    #-debug-only=eaac-riscv-kernel-to-llvm \
 
 test-full input="input_8_tiny":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-correct-broadcast --eaac-find-alias-dependency --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac --mlir-print-ir-after=eaac-find-alias-dependency -debug-only=find-alias-dependency test/{{input}}.mlir
@@ -110,6 +111,21 @@ translate input="input_8_tiny":
     cp {{input}}.reference.json ../../hardware/ATAN/test
     mkdir -p ../../hardware/ATAN/test/{{input}}
     cp {{input}}.ll ../../hardware/ATAN/test/{{input}}/{{input}}.ll
+
+translate-riscv input="ad-bottleneck-8tile-baseline":
+    {{eaac_opt}} \
+    --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
+    --buffer-results-to-out-params="hoist-static-allocs modify-public-functions" \
+    --promote-buffers-to-stack="max-alloc-size-in-bytes=4096" \
+    --inline --canonicalize \
+    --convert-linalg-to-loops --lower-affine --convert-scf-to-cf \
+    --convert-arith-to-llvm \
+    --convert-func-to-llvm="use-bare-ptr-memref-call-conv" \
+    --finalize-memref-to-llvm \
+    --convert-cf-to-llvm --convert-index-to-llvm --reconcile-unrealized-casts \
+    test/{{input}}.mlir -o /tmp/{{input}}.baseline-stage.mlir
+    {{llvm_build_dir}}/bin/mlir-translate --mlir-to-llvmir /tmp/{{input}}.baseline-stage.mlir \
+    -o ../../hardware/ATAN/test/{{input}}/{{input}}.ll
 
 # Convert a .eaac flatbuffer binary to JSON using the schema
 to-json input="input_8_tiny":
