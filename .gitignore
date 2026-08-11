@@ -16,3 +16,5 @@ build-debug/
 __pycache__/
 *.reference.json
 *.eaac
+
+CMakeFiles/
