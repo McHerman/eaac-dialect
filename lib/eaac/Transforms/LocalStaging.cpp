@@ -393,10 +393,14 @@ void allocSuccess(LiveInterval &cur, MemoryTier &tier,
   });
 }
 
-/// Select which interval to spill from a tier.
+/// Select which interval to spill from a tier. `excluded` holds ids already
+/// picked as victims for the current allocation attempt (see the multi-victim
+/// loop in `allocateAtTier`) so repeated calls make forward progress instead
+/// of re-selecting the same buffer once its freed space alone isn't enough.
 std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
                                               MemoryTier &tier,
-                                              minimalloc::Solver &solver) {
+                                              minimalloc::Solver &solver,
+                                              const llvm::StringSet<> &excluded) {
   LLVM_DEBUG(llvm::dbgs() << "[selectSpillVictim] " << tier.name
                           << ": for cur.id=" << cur.id << "\n");
 
@@ -426,11 +430,15 @@ std::optional<std::string> selectSpillVictim(const LiveInterval &cur,
 
   auto conflictingIntervals =
       getIntervalsFromSubset(*subset, tier.buffers, tier.active);
+  llvm::erase_if(conflictingIntervals, [&](const LiveInterval *iv) {
+    return excluded.contains(iv->id);
+  });
   if (conflictingIntervals.empty()) {
     LLVM_DEBUG({
       llvm::dbgs() << "[selectSpillVictim] " << tier.name
                    << ": no conflicts in active (active=" << tier.active.size()
-                   << " buffers=" << tier.buffers.size() << ")\n";
+                   << " buffers=" << tier.buffers.size()
+                   << ", excluded=" << excluded.size() << ")\n";
     });
     return std::nullopt;
   }
@@ -562,7 +570,7 @@ std::optional<SpillResult> computeSpill(const LiveInterval &cur,
 }
 
 // Forward declarations
-void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
+bool processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
                  minimalloc::Solver &solver, llvm::StringMap<int64_t> &memMap);
 
 bool allocateAtTier(LiveInterval &cur, size_t tierIdx,
@@ -588,11 +596,16 @@ static StagePoint emitStage(OpBuilder &builder, Location loc, MemRefType type,
   return {memref, copy};
 }
 
-/// Handle spilling from a tier to the next tier.
-bool handleSpill(const LiveInterval &cur, size_t tierIdx,
-                 llvm::SmallVector<MemoryTier, 4> &tiers,
-                 minimalloc::Solver &solver,
-                 llvm::StringMap<int64_t> &memMap) {
+/// Handle spilling from a tier to the next tier. `excluded` holds ids already
+/// spilled for this allocation attempt (see `allocateAtTier`'s multi-victim
+/// loop) so this always picks a *new* victim rather than re-selecting one
+/// that's already been truncated as far as it can go. Returns the spilled
+/// buffer's id on success.
+std::optional<std::string> handleSpill(const LiveInterval &cur, size_t tierIdx,
+                                       llvm::SmallVector<MemoryTier, 4> &tiers,
+                                       minimalloc::Solver &solver,
+                                       llvm::StringMap<int64_t> &memMap,
+                                       const llvm::StringSet<> &excluded) {
   MemoryTier &tier = tiers[tierIdx];
   size_t nextTierIdx = tierIdx + 1;
 
@@ -602,16 +615,16 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
 
   if (nextTierIdx >= tiers.size()) {
     LLVM_DEBUG(llvm::dbgs() << "[handleSpill] no next tier\n");
-    return false;
+    return std::nullopt;
   }
 
   MemoryTier &nextTier = tiers[nextTierIdx];
 
   // Select which interval to spill
-  auto spillIdOpt = selectSpillVictim(cur, tier, solver);
+  auto spillIdOpt = selectSpillVictim(cur, tier, solver, excluded);
   if (!spillIdOpt) {
     LLVM_DEBUG(llvm::dbgs() << "[handleSpill] no victim found\n");
-    return false;
+    return std::nullopt;
   }
 
   LLVM_DEBUG(llvm::dbgs() << "[handleSpill] victim=" << *spillIdOpt << " -> "
@@ -621,7 +634,7 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   auto resultOpt = computeSpill(cur, tier, *spillIdOpt);
   if (!resultOpt) {
     LLVM_DEBUG(llvm::dbgs() << "[handleSpill] computeSpill failed\n");
-    return false;
+    return std::nullopt;
   }
   SpillResult &result = *resultOpt;
 
@@ -638,9 +651,15 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   Value spillMemref = emitStage(builder, loc, type, originalMemref,
                                 cur.memref.getDefiningOp()).memref;
 
-  // Reload: alloc + copy spill -> reload buffer (placed at first use of reload)
+  // Reload: alloc + copy spill -> reload buffer (placed at first use of reload).
+  // A reload interval can exist with zero recorded uses (`nextUse` fell back
+  // to `originalEnd - 1` because reuseGuard padding, not a real future read,
+  // is why the victim was still "active") -- there's nothing to reload for,
+  // so don't build or queue one; leaving it queued with no memref crashes the
+  // next tier's placement of it (LiveInterval::memref stays null).
   Value reloadMemref;
-  if (hasReload && !result.reloadInterval->uses.empty()) {
+  bool hasRealReload = hasReload && !result.reloadInterval->uses.empty();
+  if (hasRealReload) {
     Operation *reloadPoint = result.reloadInterval->uses.front().op;
     reloadMemref =
         emitStage(builder, loc, type, spillMemref, reloadPoint).memref;
@@ -661,7 +680,7 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
   processTier(nextTierIdx, tiers, solver, memMap);
 
   // Add reload interval back to current tier
-  if (hasReload) {
+  if (hasRealReload) {
     Buffer *dstBuffer = nextTier.getBuffer(*spillIdOpt);
     if (dstBuffer) {
       result.reloadInterval->reloadFromTier = nextTierIdx;
@@ -675,10 +694,14 @@ bool handleSpill(const LiveInterval &cur, size_t tierIdx,
     tier.addUnhandled(std::move(*result.reloadInterval));
   }
 
-  return true;
+  return *spillIdOpt;
 }
 
-/// Try to allocate an interval at a specific tier.
+/// Try to allocate an interval at a specific tier. `cur` must land in this
+/// tier -- if it doesn't fit even after evicting one victim, keep collecting
+/// *additional* spill victims (never re-picking one already tried) until
+/// either enough room has been freed or there are no more candidates left to
+/// spill, rather than giving up after a single eviction.
 bool allocateAtTier(LiveInterval &cur, size_t tierIdx,
                     llvm::SmallVector<MemoryTier, 4> &tiers,
                     minimalloc::Solver &solver,
@@ -700,35 +723,43 @@ bool allocateAtTier(LiveInterval &cur, size_t tierIdx,
     return true;
   }
 
-  // Try a single spill and retry
-  LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
-                          << ": trying spill\n");
-  if (!handleSpill(cur, tierIdx, tiers, solver, memMap)) {
+  llvm::StringSet<> spilledVictims;
+  while (true) {
     LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
-                            << ": FAILED, no spill victim for id=" << cur.id
-                            << "\n");
-    return false;
-  }
+                            << ": trying spill (already spilled "
+                            << spilledVictims.size() << ")\n");
+    auto victim = handleSpill(cur, tierIdx, tiers, solver, memMap, spilledVictims);
+    if (!victim) {
+      LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
+                              << ": FAILED, no more spill victims for id="
+                              << cur.id << " (spilled " << spilledVictims.size()
+                              << ")\n");
+      return false;
+    }
+    spilledVictims.insert(*victim);
 
-  LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
-                          << ": retrying after spill\n");
-  solution = tryAllocate(tier, buffer, solver);
-  if (solution) {
-    allocSuccess(cur, tier, *solution, memMap);
-    return true;
+    LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
+                            << ": retrying after spilling " << *victim << "\n");
+    solution = tryAllocate(tier, buffer, solver);
+    if (solution) {
+      allocSuccess(cur, tier, *solution, memMap);
+      return true;
+    }
   }
-
-  LLVM_DEBUG(llvm::dbgs() << "[allocateAtTier] " << tier.name
-                          << ": FAILED after spill for id=" << cur.id
-                          << "\n");
-  return false;
 }
 
-/// Process all intervals in a tier's unhandled list.
-void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
+/// Process all intervals in a tier's unhandled list. Returns false if any
+/// interval could not be placed anywhere (even after exhausting every spill
+/// candidate at every deeper tier) -- callers must not silently ignore this:
+/// an unplaced interval's memref is left without an `#eaac.mem` memory-space
+/// attribute, which later fails cryptically and far from the real cause (a
+/// dangling `unrealized_conversion_cast` deep in LLVM translation) instead of
+/// as a clear diagnostic here.
+bool processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
                  minimalloc::Solver &solver,
                  llvm::StringMap<int64_t> &memMap) {
   MemoryTier &tier = tiers[tierIdx];
+  bool allPlaced = true;
 
   LLVM_DEBUG({
     llvm::dbgs() << "\n=== processTier " << tier.name << " (capacity="
@@ -756,20 +787,33 @@ void processTier(size_t tierIdx, llvm::SmallVector<MemoryTier, 4> &tiers,
     }
 
     // Try to allocate at this tier
-    allocateAtTier(cur, tierIdx, tiers, solver, memMap);
+    if (!allocateAtTier(cur, tierIdx, tiers, solver, memMap)) {
+      allPlaced = false;
+      llvm::Twine msg = llvm::Twine("local-staging: failed to allocate buffer '") +
+          cur.id + "' (size=" + llvm::Twine(cur.size) + ") in '" + tier.name +
+          "' or any deeper tier -- out of memory even after spilling";
+      if (Operation *defOp = cur.memref ? cur.memref.getDefiningOp() : nullptr)
+        defOp->emitError(msg);
+      else
+        llvm::errs() << msg.str() << " (no source location available)\n";
+    }
   }
 
   LLVM_DEBUG(llvm::dbgs() << "=== " << tier.name << " done ===\n\n");
+  return allPlaced;
 }
 
 /// Run linear scan memory allocation with recursive spilling across N tiers.
 /// `reuseGuard` is the address-reuse padding (in liveness time units) applied
 /// uniformly to every tier; see MemoryTier::reuseGuard. `alignment` is the
-/// required byte alignment applied uniformly to every buffer.
-llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
-                                  llvm::ArrayRef<int64_t> tierCapacities,
-                                  int64_t reuseGuard = 0,
-                                  int64_t alignment = 1) {
+/// required byte alignment applied uniformly to every buffer. Returns
+/// `failure()` if any buffer couldn't be placed in any tier (an error has
+/// already been emitted on its defining op by `processTier`) -- callers must
+/// check this rather than pressing on with a `memMap` that's missing entries.
+FailureOr<llvm::StringMap<int64_t>> allocate(const AllocationProblem &problem,
+                                             llvm::ArrayRef<int64_t> tierCapacities,
+                                             int64_t reuseGuard = 0,
+                                             int64_t alignment = 1) {
 
   LLVM_DEBUG({
     llvm::dbgs() << "\n=== ALLOCATION START ===\nIntervals ("
@@ -806,8 +850,9 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
   }
 
   // Process bottom-up so residents land before their stagers reference them.
+  bool allPlaced = true;
   for (size_t t = tiers.size(); t-- > 0;)
-    processTier(t, tiers, solver, memMap);
+    allPlaced &= processTier(t, tiers, solver, memMap);
 
   LLVM_DEBUG({
     llvm::dbgs() << "\n=== ALLOCATION COMPLETE ===\nFinal memMap ("
@@ -816,6 +861,8 @@ llvm::StringMap<int64_t> allocate(const AllocationProblem &problem,
       llvm::dbgs() << "  " << kv.first() << " -> " << kv.second << "\n";
   });
 
+  if (!allPlaced)
+    return failure();
   return memMap;
 }
 
@@ -1016,9 +1063,11 @@ public:
     int64_t alignment = getAlignment(getOperation()).value_or(1);
     auto map = allocate(problem, settings->tierCapacities,
                         settings->reuseGuard, alignment);
+    if (failed(map))
+      return signalPassFailure();
 
     // Emit IR for the planned chains using the offsets the allocator produced.
-    emitStagingChains(chains, intervals, map);
+    emitStagingChains(chains, intervals, *map);
   }
 };
 
