@@ -8,7 +8,7 @@ module attributes {transform.with_named_sequence} {
 
     // Erase linalg.fill ops that initialize freshly allocated buffers;
     // the downstream compute op overwrites the whole buffer anyway.
-    %fills = transform.structured.match ops{["RiscvExecuteOp"]} in %root
+    %fills = transform.structured.match ops{["linalg.fill"]} in %root
         : (!transform.any_op) -> !transform.any_op
     transform.eaac.erase_redundant_fill %fills : !transform.any_op
 
