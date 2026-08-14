@@ -12,6 +12,7 @@ add_mlir_library(EAACTransforms
   InsertRequire.cpp
   LowerAsyncToSemaphore.cpp
   InsertLoadStore.cpp
+  Schedule.cpp
   AssignSemaphoreAddresses.cpp
   LegalizeForEaacHw.cpp
   LowerEaacMemrefToLLVM.cpp

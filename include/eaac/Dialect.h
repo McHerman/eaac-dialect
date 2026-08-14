@@ -26,4 +26,11 @@
 #define GET_OP_CLASSES
 #include "eaac/Ops.h.inc"
 
+#include "eaac/IR/EAACScheduleInterfaces.h.inc"
+
+namespace mlir::eaac {
+/// Registers external models attaching ScheduleInterface to ops.
+void registerScheduleOpInterfaceExternalModels(DialectRegistry &registry);
+} // namespace mlir::eaac
+
 #endif // EAAC_DIALECT_H

@@ -1,20 +1,20 @@
 include "mlir/IR/OpBase.td"
 
-def AffineReadOpInterface : OpInterface<"AffineReadOpInterface"> {
+def ScheduleInterface : OpInterface<"ScheduleInterface"> {
   let description = [{
     Interface for querying scheduling information for given operation
   }];
-  let cppNamespace = "::mlir::affine";
+  let cppNamespace = "::mlir::eaac";
 
   let methods = [
     InterfaceMethod<
       /*desc=*/"Check if compatible hardware unit is available",
-      /*retTy=*/"::mlir::Value",
+      /*retTy=*/"::mlir::Operation *",
       /*methodName=*/"checkSchedule",
       /*args=*/(ins "Region *":$region),
       /*methodBody*/[{}],
       /*defaultImplementation=*/ [{
-        return null;
+        return nullptr;
       }]
     >,
   ];

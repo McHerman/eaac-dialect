@@ -113,6 +113,8 @@ void StoreOp::getEffects(
 #define GET_OP_CLASSES
 #include "eaac/Ops.cpp.inc"
 
+#include "eaac/IR/EAACScheduleInterfaces.cpp.inc"
+
 //===----------------------------------------------------------------------===//
 // EAAC Dialect
 //===----------------------------------------------------------------------===//

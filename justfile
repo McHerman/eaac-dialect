@@ -46,20 +46,20 @@ test-almost-full input="riscv-extrasmall":
     --eaac-encode-dependencies \
     --eaac-find-async-dependency \
     --eaac-insert-require \
+    --eaac-correct-broadcast \
+    --eaac-find-alias-dependency \
     --eaac-lower-async-to-semaphore \
+    --eaac-schedule \
     --eaac-assign-semaphore-addresses \
     "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
     --transform-interpreter \
     --eaac-legalize-for-hw \
     --eaac-riscv-kernel-to-function \
+    -debug-only=eaac-riscv-kernel-to-llvm \
     test/{{input}}.mlir
     #--eaac-riscv-kernel-to-llvm \
     #--eaac-lower-memref-to-llvm \
     #--eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
-    #-debug-only=eaac-riscv-kernel-to-llvm \
-
-test-full input="input_8_tiny":
-    {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" --inline --canonicalize --eaac-insert-load-store --eaac-local-staging --eaac-lower-copy-to-dma --eaac-encode-dependencies --eaac-find-async-dependency --eaac-insert-require --eaac-correct-broadcast --eaac-find-alias-dependency --eaac-lower-async-to-semaphore --eaac-assign-semaphore-addresses --convert-linalg-to-eaac --mlir-print-ir-after=eaac-find-alias-dependency -debug-only=find-alias-dependency test/{{input}}.mlir
 
 test-single input pass:
     {{eaac_opt}} {{pass}} test/{{input}}.mlir
@@ -78,9 +78,8 @@ build-debug:
 test: build
     {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test -v
 
-
 test-only input: build
-    {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test/{{input}} -v
+    {{llvm_build_dir}}/bin/llvm-lit {{build_dir}}/test/{{input}} -a
 
 translate input="input_8_tiny":
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \

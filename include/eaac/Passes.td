@@ -228,6 +228,19 @@ def InsertLoadStore : Pass<"eaac-insert-load-store", "mlir::ModuleOp"> {
   ];
 }
 
+def Schedule : Pass<"eaac-schedule", "mlir::ModuleOp"> {
+  let summary = "schdule ops to hardware units defined in Schedule";
+  let description = [{
+
+  }];
+  let constructor = "mlir::eaac::createSchedulePass()";
+
+  let dependentDialects = [
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
+
 
 def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::ModuleOp"> {
   let summary = "Assign static hardware addresses to semaphore pairs";

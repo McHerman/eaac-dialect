@@ -1,9 +1,11 @@
 add_mlir_dialect_library(EAACDialect
   Dialect.cpp
+  ScheduleInterfacesImpls.cpp
 
   DEPENDS
   EAACIncGen
   EAACTypesIncGen
+  MLIREAACScheduleInterfacesIncGen
 )
 
 target_link_libraries(EAACDialect

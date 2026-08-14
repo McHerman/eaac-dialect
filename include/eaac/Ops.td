@@ -13,6 +13,8 @@ include "mlir/Dialect/Async/IR/AsyncTypes.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/SymbolInterfaces.td"
+
 
 //===----------------------------------------------------------------------===//
 // EventMode enum: controls when a semaphore fires events on the scoreboard.
@@ -380,6 +382,32 @@ def ChainOp : EAAC_Op<"chain"> {
 
   let assemblyFormat = [{
     $predecessor (`broadcast` $is_broadcast^)? attr-dict
+  }];
+}
+
+def HardwareScheduleOp : EAAC_Op<"schedule", [SymbolTable, NoTerminator]> {
+  let summary = "Schedule holding hardware unit definition and schedule";
+  let description = [{
+  }];
+
+  let regions = (region AnyRegion:$body);
+
+  let assemblyFormat = [{
+    attr-dict-with-keyword regions
+  }];
+}
+
+def GEMMAllocOp : EAAC_Op<"gemm_alloc", [Symbol]> {
+  let summary = "Allocate a gemm hardware unit";
+  let description = [{
+  }];
+  let arguments = (ins SymbolNameAttr:$sym_name,  TypeAttrOf<GEMM_Type>:$funit);
+
+  //let arguments = (ins);
+  //let results = (outs GEMM_Type:$funit);
+
+  let assemblyFormat = [{
+    $sym_name attr-dict `:` $funit
   }];
 }
 
