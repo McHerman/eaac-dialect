@@ -35,6 +35,9 @@ int main(int argc, char **argv) {
   // Register our EAAC dialect
   registry.insert<mlir::eaac::EAACDialect>();
 
+  // Attach ScheduleInterface external models to ops that support scheduling
+  mlir::eaac::registerScheduleOpInterfaceExternalModels(registry);
+
   // Register EAAC transform ops as a Transform dialect extension
   mlir::eaac::registerEAACTransformDialectExtension(registry);
 

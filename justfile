@@ -55,8 +55,8 @@ test-almost-full input="riscv-extrasmall":
     --transform-interpreter \
     --eaac-legalize-for-hw \
     --eaac-riscv-kernel-to-function \
-    -debug-only=eaac-riscv-kernel-to-llvm \
     test/{{input}}.mlir
+    #-debug-only=eaac-riscv-kernel-to-llvm \
     #--eaac-riscv-kernel-to-llvm \
     #--eaac-lower-memref-to-llvm \
     #--eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
