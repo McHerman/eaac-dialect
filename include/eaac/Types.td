@@ -9,6 +9,7 @@
 
 include "mlir/IR/AttrTypeBase.td"
 include "eaac/EAAC.td"
+include "eaac/IR/EAACTypeInterfaces.td"
 
 def EAAC_SemaphoreType : TypeDef<EAAC_Dialect, "Semaphore"> {
   let mnemonic = "semaphore";
@@ -33,7 +34,7 @@ def EAAC_MemSpaceAttr : AttrDef<EAAC_Dialect, "MemSpace"> {
 }
 
 class EAAC_Funit_Type<string name, string typeMnemonic, list<Trait> traits = []>
-    : TypeDef<EAAC_Dialect, name, traits> {
+    : TypeDef<EAAC_Dialect, name, !listconcat(traits, [FunitTypeInterface])> {
   let mnemonic = typeMnemonic;
 
   let parameters = (ins "unsigned":$pipeline_depth);
@@ -70,5 +71,12 @@ def GEMM_Type : EAAC_Funit_Type<"GEMM", "gemm"> {
     Capable of computing linalg.matmul operations
   }];
 }
+
+// Matches any type implementing FunitTypeInterface, so HardwareAllocOp
+// (and any future generic allocation op) doesn't need updating when a new
+// hardware unit type is added.
+def AnyFunitType : Type<
+    CPred<"::llvm::isa<::mlir::eaac::FunitTypeInterface>($_self)">,
+    "a hardware functional unit type">;
 
 #endif // EAAC_TYPES

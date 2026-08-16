@@ -29,27 +29,24 @@ public:
     moduleOp.walk([&](func::FuncOp f) { functions.push_back(f);});
 
     SmallVector<eaac::HardwareScheduleOp> schedules;
-    moduleOp.walk([&](eaac::HardwareScheduleOp s) { 
-      if (s->hasTrait<OpTrait::SymbolTable>())
-        LLVM_DEBUG(llvm::dbgs() << "found op with symboltable \n");
-        schedules.push_back(s);
+    moduleOp.walk([&](eaac::HardwareScheduleOp s) { schedules.push_back(s); });
+    assert(schedules.size() == 1); // Only a single schedule pr module.
 
-    });
-    assert(schedules.size() == 1); // Only a single schedule pr function.
-    
     eaac::HardwareScheduleOp schedule = schedules.pop_back_val();
-    SymbolTable symTable(schedule);
-    MLIRContext *ctx = moduleOp.getContext(); 
 
     LLVM_DEBUG(llvm::dbgs() << "running scheduling \n");
 
     for(auto funcOp : functions){
-      funcOp.getBody().walk([&](Operation *op) {  
+      funcOp.getBody().walk([&](Operation *op) {
         if (auto iface = dyn_cast<ScheduleInterface>(op)) {
 
           Operation *funit = iface.checkSchedule(&schedule.getBody());
 
-          op->setAttr("hw_unit", SymbolRefAttr::get(ctx, SymbolTable::getSymbolName(funit)));
+          // Units live inside the named eaac.schedule symbol table, so
+          // consumers must use a qualified reference: @schedule::@unit.
+          op->setAttr("hw_unit",
+              SymbolRefAttr::get(SymbolTable::getSymbolName(schedule),
+                  {FlatSymbolRefAttr::get(SymbolTable::getSymbolName(funit))}));
         }
       });
     }

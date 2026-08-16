@@ -240,7 +240,17 @@ def Schedule : Pass<"eaac-schedule", "mlir::ModuleOp"> {
   ];
 }
 
+def SemOptimize : Pass<"eaac-sem-optimize", "mlir::ModuleOp"> {
+  let summary = "Semaphore optimizations";
+  let description = [{
 
+  }];
+  let constructor = "mlir::eaac::createSemOptimizePass()";
+
+  let dependentDialects = [
+    "mlir::eaac::EAACDialect"
+  ];
+}
 
 def AssignSemaphoreAddresses : Pass<"eaac-assign-semaphore-addresses", "mlir::ModuleOp"> {
   let summary = "Assign static hardware addresses to semaphore pairs";

@@ -6,6 +6,8 @@ add_mlir_dialect_library(EAACDialect
   EAACIncGen
   EAACTypesIncGen
   MLIREAACScheduleInterfacesIncGen
+  MLIREAACTypeInterfacesIncGen
+  MLIREAACOpInterfacesIncGen
 )
 
 target_link_libraries(EAACDialect

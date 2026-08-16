@@ -21,6 +21,12 @@ using namespace mlir::eaac;
 #include "eaac/Dialect.cpp.inc"
 
 //===----------------------------------------------------------------------===//
+// TableGen'd type interface definitions
+//===----------------------------------------------------------------------===//
+
+#include "eaac/IR/EAACTypeInterfaces.cpp.inc"
+
+//===----------------------------------------------------------------------===//
 // TableGen'd type definitions
 //===----------------------------------------------------------------------===//
 
@@ -109,6 +115,8 @@ void StoreOp::getEffects(
 }
 
 #include "eaac/EAACEnums.cpp.inc"
+
+#include "eaac/IR/EAACOpInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "eaac/Ops.cpp.inc"

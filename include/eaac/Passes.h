@@ -61,6 +61,9 @@ std::unique_ptr<Pass> createInsertLoadStorePass();
 /// Creates pass to replace function args/returns with eaac.load/store
 std::unique_ptr<Pass> createSchedulePass();
 
+// Creates pass to optimize semaphore allocations
+std::unique_ptr<Pass> createSemOptimizePass();
+
 /// Creates pass to assign static hardware addresses to semaphore pairs
 std::unique_ptr<Pass> createAssignSemaphoreAddressesPass();
 

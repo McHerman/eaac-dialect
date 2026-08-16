@@ -25,10 +25,11 @@ struct MatmulScheduleModel
           MatmulScheduleModel, linalg::MatmulOp> {
   Operation *checkSchedule(Operation *op, Region *region) const {
 
-    llvm::SmallVector<eaac::GEMMAllocOp> hardware_units;
+    llvm::SmallVector<eaac::HardwareAllocOp> hardware_units;
 
-    region->front().walk([&](eaac::GEMMAllocOp funit) {
-      hardware_units.push_back(funit);
+    region->front().walk([&](eaac::HardwareAllocOp funit) {
+      if (isa<eaac::GEMMType>(funit.getFunit()))
+        hardware_units.push_back(funit);
     });
 
     // TODO, impement more intelligment scheduling for multible hardware units

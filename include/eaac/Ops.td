@@ -8,7 +8,9 @@
 #define EAAC_OPS
 
 include "eaac/EAAC.td"
+include "eaac/Traits.td"
 include "eaac/Types.td"
+include "eaac/IR/EAACOpInterfaces.td"
 include "mlir/Dialect/Async/IR/AsyncTypes.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpAsmInterface.td"
@@ -385,26 +387,29 @@ def ChainOp : EAAC_Op<"chain"> {
   }];
 }
 
-def HardwareScheduleOp : EAAC_Op<"schedule", [SymbolTable, NoTerminator]> {
-  let summary = "Schedule holding hardware unit definition and schedule";
+def HardwareScheduleOp : EAAC_Op<"schedule", [Symbol, SymbolTable, NoTerminator]> {
+  let summary = "Named scope grouping hardware unit definitions and schedule info";
   let description = [{
   }];
 
+  let arguments = (ins SymbolNameAttr:$sym_name);
   let regions = (region AnyRegion:$body);
 
   let assemblyFormat = [{
-    attr-dict-with-keyword regions
+    $sym_name attr-dict-with-keyword regions
   }];
 }
 
-def GEMMAllocOp : EAAC_Op<"gemm_alloc", [Symbol]> {
-  let summary = "Allocate a gemm hardware unit";
+def HardwareAllocOp : EAAC_Op<"hw_alloc",
+    [Symbol, HardwareUnitTrait, HardwareUnitOpInterface]> {
+  let summary = "Allocate a hardware functional unit";
   let description = [{
+    Declares a named hardware unit instance (e.g. a GEMM, load, store, or
+    RISC-V core), declared inside an eaac.schedule's body and referenced
+    from elsewhere in the module via the qualified symbol
+    `@schedule_name::@unit_name`.
   }];
-  let arguments = (ins SymbolNameAttr:$sym_name,  TypeAttrOf<GEMM_Type>:$funit);
-
-  //let arguments = (ins);
-  //let results = (outs GEMM_Type:$funit);
+  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttrOf<AnyFunitType>:$funit);
 
   let assemblyFormat = [{
     $sym_name attr-dict `:` $funit
