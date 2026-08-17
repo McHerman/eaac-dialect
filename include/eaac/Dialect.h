@@ -13,15 +13,21 @@
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 
+#include "eaac/Traits.h"
+
 #include "eaac/Dialect.h.inc"
 
 #include "eaac/EAACEnums.h.inc"
+
+#include "eaac/IR/EAACTypeInterfaces.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "eaac/Types.h.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "eaac/Attrs.h.inc"
+
+#include "eaac/IR/EAACOpInterfaces.h.inc"
 
 #define GET_OP_CLASSES
 #include "eaac/Ops.h.inc"
