@@ -494,8 +494,8 @@ private:
 
       if (iv.reused) {
         op->setAttr("eaac.sem_reused", UnitAttr::get(ctx));
-        op->emitWarning("semaphore address reused due to register pressure — "
-                        "correctness depends on self-sequencing guarantee");
+        //op->emitWarning("semaphore address reused due to register pressure — "
+        //                "correctness depends on self-sequencing guarantee");
       }
     }
   }
