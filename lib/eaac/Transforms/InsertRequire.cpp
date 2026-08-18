@@ -15,6 +15,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -59,7 +60,7 @@ public:
 private:
   void processFunction(func::FuncOp funcOp) {
     funcOp.walk([&](async::ExecuteOp executeOp) {
-      llvm::DenseMap<Value, Value> tokenToMemref;
+      llvm::MapVector<Value, Value> tokenToMemref;
 
       for (auto token : executeOp.getDependencies()) {
         auto producerExec = token.getDefiningOp<async::ExecuteOp>();

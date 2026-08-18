@@ -18,6 +18,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -45,9 +46,9 @@ static int64_t getMemRefSizeInBytes(MemRefType type) {
 
 /// Replace eaac.require with eaac.sem_require using the token→sem map.
 struct RequireToSemRequire : OpRewritePattern<RequireOp> {
-  llvm::DenseMap<Value, Value> &tokenToSem;
+  llvm::MapVector<Value, Value> &tokenToSem;
 
-  RequireToSemRequire(MLIRContext *ctx, llvm::DenseMap<Value, Value> &map)
+  RequireToSemRequire(MLIRContext *ctx, llvm::MapVector<Value, Value> &map)
       : OpRewritePattern(ctx), tokenToSem(map) {}
 
   LogicalResult matchAndRewrite(RequireOp op,
@@ -105,7 +106,7 @@ public:
     ModuleOp module = getOperation();
     module.walk([&](func::FuncOp funcOp) {
       // Pre-pass: build token → semaphore map.
-      llvm::DenseMap<Value, Value> tokenToSem;
+      llvm::MapVector<Value, Value> tokenToSem;
       buildTokenToSemMap(funcOp, tokenToSem);
 
       // Stage 1: convert eaac.require → eaac.sem_require. After this,
@@ -138,7 +139,7 @@ private:
   /// Walk all async.execute ops, find token→require→memref edges,
   /// insert sem_alloc before each producer, populate tokenToSem.
   void buildTokenToSemMap(func::FuncOp funcOp,
-                          llvm::DenseMap<Value, Value> &tokenToSem) {
+                          llvm::MapVector<Value, Value> &tokenToSem) {
     OpBuilder builder(funcOp);
     auto loc = funcOp.getLoc();
     int addr = 0;
@@ -191,7 +192,7 @@ private:
 
   // Append chained semaphores to semaphore allocation
   void chainSem(func::FuncOp funcOp,
-                const llvm::DenseMap<Value, Value> &tokenToSem) {
+                const llvm::MapVector<Value, Value> &tokenToSem) {
     llvm::SmallVector<eaac::ChainOp> chainOps;
     funcOp.walk([&](eaac::ChainOp op) { chainOps.push_back(op); });
 
@@ -290,7 +291,7 @@ private:
 
   /// Insert sem_dealloc after the consumer eaac.execute that uses the semaphore.
   void insertSemDeallocs(func::FuncOp funcOp,
-                         llvm::DenseMap<Value, Value> &tokenToSem) {
+                         llvm::MapVector<Value, Value> &tokenToSem) {
     OpBuilder builder(funcOp);
     for (auto &[token, sem] : tokenToSem) {
       for (Operation *user : sem.getUsers()) {
