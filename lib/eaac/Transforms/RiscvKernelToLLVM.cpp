@@ -104,6 +104,34 @@ static int64_t readNumSemaphoreGenerations(ModuleOp module) {
 }
 
 
+// Base address of the semaphore MMIO window in the RISC-V core's address
+// space. Defaults to 0x4000 (the value every prior RISC-V binary was
+// compiled with) when the module doesn't specify 'riscv_sem_base' -- so
+// existing .mlir test files keep compiling identically. Set explicitly via
+// the EAAC target-device-spec when a kernel chain's scratchpad buffers grow
+// large enough to reach 0x4000 and collide with the semaphore window.
+static int64_t readRiscvSemBase(ModuleOp module) {
+  auto sysSpec = dyn_cast_or_null<TargetSystemSpecAttr>(
+      module->getAttr(DLTIDialect::kTargetSystemDescAttrName));
+  if (!sysSpec)
+    return 0x4000;
+  auto deviceId = StringAttr::get(module.getContext(), "EAAC");
+  std::optional<TargetDeviceSpecInterface> deviceSpec =
+      sysSpec.getDeviceSpecForDeviceID(deviceId);
+  if (!deviceSpec)
+    return 0x4000;
+  for (DataLayoutEntryInterface entry : (*deviceSpec).getEntries()) {
+    auto entryKey = dyn_cast<StringAttr>(entry.getKey());
+    if (!entryKey || entryKey.getValue() != "riscv_sem_base")
+      continue;
+    auto i = dyn_cast<IntegerAttr>(entry.getValue());
+    if (!i)
+      return 0x4000;
+    return i.getInt();
+  }
+  return 0x4000;
+}
+
 static unsigned computeGenWidth(int64_t numGenerations) {
   if (numGenerations <= 1)
     return 0;
@@ -155,12 +183,14 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
                << " sem gen  " << semGen 
                << "\n");
 
+    int64_t semBase = readRiscvSemBase(moduleOp);
+
     // Semaphoreoffset + semaddr * 8 (2 semaphores of 2 bytes, 2 ports = 8)
     int64_t semAddressFull = ((semAddr * 4) << genWidth) + semGen;
-    int64_t hwAddressFull = 0x4000 + semAddressFull;
+    int64_t hwAddressFull = semBase + semAddressFull;
 
     int64_t semAddressEmpty = ((semAddr * 4 + 1) << genWidth) + semGen;
-    int64_t hwAddressEmpty = 0x4000 + semAddressEmpty;
+    int64_t hwAddressEmpty = semBase + semAddressEmpty;
 
     LLVM_DEBUG(llvm::dbgs()
                << "sem addr full " << semAddressFull 
@@ -260,10 +290,11 @@ struct ConvertEAACRequire : OpConversionPattern<eaac::SemRequireOp> {
     ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
 
     int genWidth = computeGenWidth(readNumSemaphoreGenerations(moduleOp));
+    int64_t semBase = readRiscvSemBase(moduleOp);
 
     // Semaphoreoffset + semaddr * 8 (2 semaphores of 2 bytes, 2 ports = 8) added port offset
-    int64_t hwAddressFull = 0x4000 + ((semAddr * 4 + 2) << genWidth) + semGen;
-    int64_t hwAddressEmpty = 0x4000 + ((semAddr * 4 + 2 + 1) << genWidth) + semGen;
+    int64_t hwAddressFull = semBase + ((semAddr * 4 + 2) << genWidth) + semGen;
+    int64_t hwAddressEmpty = semBase + ((semAddr * 4 + 2 + 1) << genWidth) + semGen;
 
     // RISC-V target is fixed 32-bit, so the index width is hardcoded rather
     // than pulled from a type converter.
