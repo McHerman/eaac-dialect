@@ -8,6 +8,8 @@
 //#include "llvm/ADT/STLExtras.h" // usually already pulled in transitively
 #include <cassert>
 #include <cstdint>
+#include "llvm/ADT/TypeSwitch.h"
+
 
 #define DEBUG_TYPE "eaac-sem-optimize"
 
@@ -56,25 +58,31 @@ private:
     if(!name.empty())
       LLVM_DEBUG(llvm::dbgs() << "Schedule: " << name << "\n");
 
-    schedule.getBody().walk([&](Operation *op) {
-      
+    schedule.getBody().walk([&](Operation *hwOp) {
+
       llvm::DenseMap<mlir::Operation*, int64_t> work;
-      int64_t count = 0;
 
-      auto uses = SymbolTable::getSymbolUses(op, moduleOp);
+      // Build set of operations conforming to speific hardware op
+      llvm::SmallPtrSet<mlir::Operation *, 16> userOps;
+      auto uses = SymbolTable::getSymbolUses(hwOp, moduleOp);
       for(auto user : *uses) {
-
-        Operation *userOp = user.getUser();
-
-        if(userOp){
-          LLVM_DEBUG(llvm::dbgs() << "Found hardware user" << "\n");
-          work.try_emplace(userOp, count);
+        if(Operation *userOp = user.getUser())
+          userOps.insert(userOp);
+      }
+      
+      // Use actual walk to assign ordering.
+      int64_t count = 0;
+      moduleOp.walk([&](Operation *op) {
+        if(userOps.contains(op)) {
+          work.try_emplace(op, count);
           count += 1;
         }
-      }
-      elliminateImplicit(work, op);
+      });
+
+      elliminateImplicit(work, hwOp);
     });
   };
+
 
   // Eliminate implicit
   // 1. Find require statements in execute block for given hardware op
@@ -90,104 +98,108 @@ private:
   // Remove sem, takes semaphore
 
 
-  static void elliminateImplicit(const llvm::DenseMap<mlir::Operation*, int64_t> &work, 
+  static void elliminateImplicit(const llvm::DenseMap<mlir::Operation*, int64_t> &work,
                                  mlir::Operation *hardwareOp) {
     for(auto &[key, value] : work) { // Iterate operations cheduled to same hardware unit
-      llvm::SmallVector<eaac::SemRequireOp> requireOps = findRequire(key);
+      auto parentExecute = dyn_cast<eaac::ExecuteOp>(key->getParentOp());
+      if(!parentExecute)
+        continue;
+      llvm::SmallVector<eaac::SemRequireOp, 4> requireOps = parentExecute.getRequireOps();
       // TODO check for aliasing chaining
-      
+
       for(eaac::SemRequireOp requireOp : requireOps) {
 
         // Find link between producer and consumer semaphore
-        eaac::SemAcquireOp acquireOp = findProducer(requireOp);
-        auto producerOp = findOp(acquireOp);
-
-        // Use schdule to find pipeline distance between ops
+        eaac::SemAcquireOp acquireOp = requireOp.getProducer();
         auto pipeline_depth = findFunitDepth(hardwareOp);
-        auto distance = findDistance(key, producerOp, work);
-        if(!distance.has_value())
-          LLVM_DEBUG(llvm::dbgs() << "No distance val" << "\n");
 
-  
-        if(pipeline_depth.has_value() && distance.has_value() ) {
+        if(!acquireOp) { // Broadcast style semaphores
+          LLVM_DEBUG(llvm::dbgs() << "Op has no producer, (Broadcast R-mode)" << "\n");
 
-          LLVM_DEBUG(llvm::dbgs() << "Valid pipeline and distance vals" << "\n");
+          bool dontCull = false;
 
-          if(distance >= pipeline_depth) {
-            LLVM_DEBUG(llvm::dbgs() << "Found implicit serialization" << "\n");
-            // Still need to check if the semaphore takes any chaining inputs 
-            // or provides chaining further down
-            //
-            eaac::SemAllocOp parent = dyn_cast<eaac::SemAllocOp>(requireOp.getSemaphore().getDefiningOp());
-            cullSemaphore(parent);
-          }else{
-            LLVM_DEBUG(llvm::dbgs() << "No implicit serialization, distance:" << distance << "\n");
+          eaac::SemAllocOp parent = dyn_cast<eaac::SemAllocOp>(requireOp.getSemaphore().getDefiningOp());
+
+          for (Value chainedSem : parent.getChainsFrom()) {
+            LLVM_DEBUG(llvm::dbgs() << "Checking chain: sem_alloc=" << parent.getSemaphore()
+
+            bool cull = checkChain(parent, chainedSem, work, pipeline_depth.value());
+
+            if(cull) {
+              dontCull = false;
+            }
           }
 
+          for(auto use : parent.getResult().getUsers()) {
+            eaac::SemAllocOp chained = dyn_cast<SemAllocOp>(use);
+
+              if(!checkChain(chained, parent.getResult(), work, pipeline_depth.value())) {
+                //LLVM_DEBUG(llvm::dbgs() << "Broadcast semaphore cull cancelled: unable to clean chain from sem to other sem" << "\n");
+                dontCull = true;
+              }
+            }
+          }
+
+
+          if(!dontCull) {
+            //LLVM_DEBUG(llvm::dbgs() << "CULLING BROADCAST SEM" << "\n");
+            cullSemaphore(parent);
+          }
+
+        } else {
+
+          auto producerOp = getPayloadOp(acquireOp);
+
+          // Use schdule to find pipeline distance between ops
+          auto distance = findDistance(producerOp, key, work);
+          if(!distance.has_value())
+            LLVM_DEBUG(llvm::dbgs() << "No distance val (cross unit async)" << "\n");
+
+  
+          if(pipeline_depth.has_value() && distance.has_value() ) {
+
+            if(distance >= pipeline_depth) {
+              LLVM_DEBUG(llvm::dbgs() << "Found implicit serialization" << "\n");
+              // Still need to check if the semaphore takes any chaining inputs 
+              // or provides chaining further down
+              eaac::SemAllocOp parent = dyn_cast<eaac::SemAllocOp>(requireOp.getSemaphore().getDefiningOp());
+
+              bool dontCull = false;
+              
+              for (Value chainedSem : parent.getChainsFrom()) {
+                if(!checkChain(parent, chainedSem, work, pipeline_depth.value())) {
+                  LLVM_DEBUG(llvm::dbgs() << "Semaphore cull cancelled: chains to other sem" << "\n");
+                  dontCull = true;
+                }
+              }
+
+              for(auto use : parent.getResult().getUsers()) {
+                eaac::SemAllocOp chained = dyn_cast<SemAllocOp>(use);
+
+                if(chained) {
+                  if(!checkChain(chained, parent.getResult(), work, pipeline_depth.value())) {
+                    LLVM_DEBUG(llvm::dbgs() << "Semaphore cull cancelled: unable to clean chain from sem to other sem" << "\n");
+                    dontCull = true;
+                  }
+                }
+              }
+
+              if(!dontCull)
+                cullSemaphore(parent);
+            }else{
+              LLVM_DEBUG(llvm::dbgs() << "No implicit serialization, distance:" << distance << "\n");
+            }
+
+          }
         }
       } 
-
     }
   };
 
-
-  static mlir::Operation* findOp(mlir::Operation *op){
-    eaac::ExecuteOp parentOp = dyn_cast<eaac::ExecuteOp>(op->getParentOp());
-
-
-    if(!parentOp) {
-      LLVM_DEBUG(llvm::dbgs() << "Incorrect parent op" << "\n");
-      return nullptr;
-    }
-
-    llvm::SmallVector<Operation *> ops;
-
-    for (Operation &bodyOp : parentOp.getBody().getOps()) {
-      if(!isa<eaac::SemRequireOp>(bodyOp) && !isa<eaac::SemAcquireOp>(bodyOp)) {
-        //LLVM_DEBUG(llvm::dbgs() << "Pushing op: " << bodyOp.getName() << "\n");
-        ops.push_back(&bodyOp);
-      }
-    }
-
-    if (ops.size() != 1) {
-      return nullptr;
-    }
-
-    return ops.pop_back_val();
-  };
+  
 
 
 
-
-
-  static llvm::SmallVector<eaac::SemRequireOp> findRequire(mlir::Operation *op){
-    llvm::SmallVector<eaac::SemRequireOp> returnOps;
-
-    eaac::ExecuteOp parentOp = dyn_cast<eaac::ExecuteOp>(op->getParentOp());
-
-    if(parentOp) {
-      parentOp.getBody().walk([&](eaac::SemRequireOp requireOp) {  
-        returnOps.push_back(requireOp);
-      });
-    }
-
-    return returnOps;
-  };
-
-
-  static eaac::SemAcquireOp findAcquire(mlir::Operation *op){
-
-    eaac::SemAcquireOp returnOp;
-    eaac::ExecuteOp parentOp = dyn_cast<eaac::ExecuteOp>(op->getParentOp());
-
-    if(parentOp) {
-      auto ops = parentOp.getBody().getOps<eaac::SemAcquireOp>();
-      assert(llvm::range_size(ops) == 1); // Ensure a single acquire pr eaac execute region
-      returnOp = *ops.begin();
-    }
-      
-    return returnOp;
-  };
 
 
   static std::optional<int64_t> findDistance(mlir::Operation *earlier,
@@ -208,9 +220,7 @@ private:
     int64_t laterTime = laterIt->second;
     int64_t earlierTime = earlierIt->second;
   
-    if (laterTime > earlierTime)
-      return laterTime - earlierTime;
-    return std::nullopt;
+    return laterTime - earlierTime;
   }
 
 
@@ -234,41 +244,78 @@ private:
   }
 
 
+  // The payload op of the eaac.execute region containing a semaphore op.
+  static mlir::Operation *getPayloadOp(mlir::Operation *semOp) {
+    if(!semOp)
+      return nullptr;
+    auto parent = dyn_cast<eaac::ExecuteOp>(semOp->getParentOp());
+    return parent ? parent.getPayloadOp() : nullptr;
+  }
+
+  static bool checkChain(eaac::SemAllocOp op, Value chainedSem,
+                          const llvm::DenseMap<mlir::Operation *, int64_t> &work,
+                          int64_t depth) {
+
+    llvm::SmallVector<eaac::SemRequireOp> chain;
+    llvm::SmallVector<mlir::Operation *> chained;
+
+    LLVM_DEBUG(llvm::dbgs() << "running chain check" << "\n");
+
+    for (Operation *user : chainedSem.getUsers()) {
+      llvm::TypeSwitch<Operation *>(user)
+          .Case<eaac::SemRequireOp>([&](auto op) { chain.push_back(op); })
+          .Default([&](Operation *op) {
+            //op->emitError("unexpected user of chain semaphore");
+          });
+    }
+
+    for (Operation *user : op.getResult().getUsers()) {
+      llvm::TypeSwitch<Operation *>(user)
+          .Case<eaac::SemRequireOp>([&](auto userOp) {
+            if(op.getEventMode() == mlir::eaac::EventMode::R){ // Semaphore uses broadcast type chain
+              chained.push_back(userOp); 
+              //LLVM_DEBUG(llvm::dbgs() << "FOUND R-MODE CONSUMER" << "\n");
+            }
+          })
+          .Case<eaac::SemAcquireOp>([&](auto userOp) {
+            if(op.getEventMode() == mlir::eaac::EventMode::RW){ // Semaphore uses aliasing type chain 
+              chained.push_back(userOp); 
+              //LLVM_DEBUG(llvm::dbgs() << "FOUND RW-MODE CONSUMER" << "\n");
+            }
+          })
+          .Default([&](Operation *op) {
+            //op->emitError("unexpected user of chained semaphore");
+          });
+    }
+
+    assert(chain.size() == 1);
+    assert(chained.size() == 1);
+
+    auto chainOp = getPayloadOp(chain.pop_back_val());
+    auto chainedOp = getPayloadOp(chained.pop_back_val());
+
+    auto distance = findDistance(chainOp, chainedOp, work);
+
+    if(distance.has_value() && distance.value() >= depth){
+      return true;
+    };
+
+    return false; 
+  }
+
+
   static void cullSemaphore(eaac::SemAllocOp op) {
 
-    // Check whether semaphore chains from other sem
-    for (Value chainedSem : op.getChainsFrom()) {
-      LLVM_DEBUG(llvm::dbgs() << "Semaphore cull cancelled: chains from other sem" << "\n");
-      return;
-    }
-
-    // Check if other sem chains current sem
-    for (Operation *userOp : op.getSemaphore().getUsers()) {
-      eaac::SemAllocOp allocOp = dyn_cast<eaac::SemAllocOp>(userOp);
-
-      if(!allocOp)
-        continue;
-
-      // Slightly unnessecary check, but probably good futureproofing
-      //if(allocOp.getChainsFrom() == op.getSemaphore()) {
-      if (llvm::is_contained(allocOp.getChainsFrom(), op.getSemaphore())) {
-        LLVM_DEBUG(llvm::dbgs() << "Semaphore cull cancelled: is chained by other sem" << "\n");
-        return; 
-      }
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "Semaphore culled" << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "CULLING SEM!" << "\n");
 
     for(auto user : op.getResult().getUsers()) {
       user->erase();
     }
-
     if(op.use_empty())
       op.erase();
 
     return; 
   }
-
 
   static void processTransitivity(func::FuncOp funcOp){
     // Step 1: Number all operations
@@ -281,7 +328,7 @@ private:
     funcOp.getBody().walk([&](eaac::ExecuteOp executeOp) {  
       executeOp.getBody().walk([&](eaac::SemRequireOp requireOp) {
 
-        eaac::SemAcquireOp producer = findProducer(requireOp);
+        eaac::SemAcquireOp producer = requireOp.getProducer();
 
         if(!producer)
           return WalkResult::skip(); 
@@ -298,28 +345,6 @@ private:
       });
     });
 
-  };
-
-
-  static eaac::SemAcquireOp findProducer(eaac::SemRequireOp op){
-    eaac::SemAcquireOp returnOp;
-    for(auto arg : op->getOperands()) {
-
-      auto sem = arg.getDefiningOp()->getResults();
-
-      for(auto user : sem.getUsers()){
-        eaac::SemAcquireOp acquireOp = dyn_cast<eaac::SemAcquireOp>(user);
-
-        if(!acquireOp)
-          continue;
-
-        //LLVM_DEBUG(llvm::dbgs() << "Found semaphore acquire \n");
-
-        returnOp = acquireOp;
-      }; 
-    };
-
-    return returnOp;
   };
 
 

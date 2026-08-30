@@ -114,6 +114,56 @@ void StoreOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+//===----------------------------------------------------------------------===//
+// ExecuteOp
+//===----------------------------------------------------------------------===//
+
+Operation *ExecuteOp::getPayloadOp() {
+  Operation *payload = nullptr;
+  for (Operation &op : getBody().getOps())
+    if (!isa<SemRequireOp, SemAcquireOp>(op))
+      payload = &op;
+  return payload;
+}
+
+SemAcquireOp ExecuteOp::getAcquireOp() {
+  auto ops = getBody().getOps<SemAcquireOp>();
+  return ops.empty() ? nullptr : *ops.begin();
+}
+
+SmallVector<SemRequireOp, 4> ExecuteOp::getRequireOps() {
+  return llvm::to_vector(getBody().getOps<SemRequireOp>());
+}
+
+LogicalResult ExecuteOp::verify() {
+  int64_t payloadCount = 0;
+  int64_t acquireCount = 0;
+  for (Operation &op : getBody().getOps()) {
+    if (isa<SemAcquireOp>(op))
+      acquireCount++;
+    else if (!isa<SemRequireOp>(op))
+      payloadCount++;
+  }
+  if (payloadCount != 1)
+    return emitOpError("expects exactly one non-semaphore op in body, found ")
+           << payloadCount;
+  if (acquireCount > 1)
+    return emitOpError("expects at most one sem_acquire in body, found ")
+           << acquireCount;
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// SemRequireOp
+//===----------------------------------------------------------------------===//
+
+SemAcquireOp SemRequireOp::getProducer() {
+  for (Operation *user : getSemaphore().getUsers())
+    if (auto acquire = dyn_cast<SemAcquireOp>(user))
+      return acquire;
+  return nullptr;
+}
+
 #include "eaac/EAACEnums.cpp.inc"
 
 #include "eaac/IR/EAACOpInterfaces.cpp.inc"

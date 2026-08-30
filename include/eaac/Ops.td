@@ -217,6 +217,20 @@ def ExecuteOp : EAAC_Op<"execute", [NoTerminator]> {
   let assemblyFormat = [{
     attr-dict-with-keyword regions
   }];
+
+  let extraClassDeclaration = [{
+    /// The single non-semaphore op in the body -- the actual hardware work.
+    /// Well-formedness (exactly one such op) is enforced by the verifier.
+    Operation *getPayloadOp();
+
+    /// The sem_acquire op in the body, if any.
+    SemAcquireOp getAcquireOp();
+
+    /// All sem_require ops in the body.
+    SmallVector<SemRequireOp, 4> getRequireOps();
+  }];
+
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -252,6 +266,11 @@ def SemRequireOp : EAAC_Op<"sem_require", [
   let assemblyFormat = [{
     $semaphore `,` $memref (`chains_from` `(` $chains_from^ `:` type($chains_from) `)`)?
     attr-dict `:` type($semaphore) `,` type($memref)
+  }];
+
+  let extraClassDeclaration = [{
+    /// The sem_acquire that produces this require's semaphore, if any.
+    SemAcquireOp getProducer();
   }];
 }
 
