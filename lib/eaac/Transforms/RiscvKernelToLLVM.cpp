@@ -187,10 +187,10 @@ struct ConvertEAACAcquire : OpConversionPattern<eaac::SemAcquireOp> {
 
     // Semaphoreoffset + semaddr * 8 (2 semaphores of 2 bytes, 2 ports = 8)
     int64_t semAddressFull = ((semAddr * 4) << genWidth) + semGen;
-    int64_t hwAddressFull = semBase + semAddressFull;
+    int64_t hwAddressFull = semBase + semAddressFull + 0x80000000;
 
     int64_t semAddressEmpty = ((semAddr * 4 + 1) << genWidth) + semGen;
-    int64_t hwAddressEmpty = semBase + semAddressEmpty;
+    int64_t hwAddressEmpty = semBase + semAddressEmpty + 0x80000000;
 
     LLVM_DEBUG(llvm::dbgs()
                << "sem addr full " << semAddressFull 
@@ -293,8 +293,8 @@ struct ConvertEAACRequire : OpConversionPattern<eaac::SemRequireOp> {
     int64_t semBase = readRiscvSemBase(moduleOp);
 
     // Semaphoreoffset + semaddr * 8 (2 semaphores of 2 bytes, 2 ports = 8) added port offset
-    int64_t hwAddressFull = semBase + ((semAddr * 4 + 2) << genWidth) + semGen;
-    int64_t hwAddressEmpty = semBase + ((semAddr * 4 + 2 + 1) << genWidth) + semGen;
+    int64_t hwAddressFull = semBase + ((semAddr * 4 + 2) << genWidth) + semGen + 0x80000000;
+    int64_t hwAddressEmpty = semBase + ((semAddr * 4 + 2 + 1) << genWidth) + semGen + 0x80000000;
 
     // RISC-V target is fixed 32-bit, so the index width is hardcoded rather
     // than pulled from a type converter.

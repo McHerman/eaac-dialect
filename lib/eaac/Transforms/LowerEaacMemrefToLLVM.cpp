@@ -133,7 +133,7 @@ struct EaacMemSpaceCastToLLVM : OpRewritePattern<UnrealizedConversionCastOp> {
       return failure();
 
     Location loc = castOp.getLoc();
-    int64_t hwOffset = memSpace.getOffset();
+    int64_t hwOffset = memSpace.getOffset() + 0x80000000;
 
     // Build a pointer from the hardware-assigned base address. Use the same
     // width as the type converter's index type so this matches the target's
