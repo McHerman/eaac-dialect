@@ -28,6 +28,18 @@ def FunitTypeInterface : TypeInterface<"FunitTypeInterface"> {
         return $_type.getPipelineDepth();
       }]
     >,
+    InterfaceMethod<
+      /*desc=*/"Returns the queue depth of this hardware unit",
+      /*retTy=*/"unsigned",
+      /*methodName=*/"getQueueDepth",
+      /*args=*/(ins),
+      /*methodBody=*/[{}],
+      /*defaultImplementation=*/ [{
+        return $_type.getQueueDepth();
+      }]
+    >,
+
+
   ];
 }
 

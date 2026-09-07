@@ -37,8 +37,8 @@ class EAAC_Funit_Type<string name, string typeMnemonic, list<Trait> traits = []>
     : TypeDef<EAAC_Dialect, name, !listconcat(traits, [FunitTypeInterface])> {
   let mnemonic = typeMnemonic;
 
-  let parameters = (ins "unsigned":$pipeline_depth);
-  let assemblyFormat = "`<` $pipeline_depth `>`";
+  let parameters = (ins "unsigned":$pipeline_depth, "unsigned":$queue_depth);
+  let assemblyFormat = "`<` $pipeline_depth $queue_depth `>`";
 
   let genMnemonicAlias = 1;
 }

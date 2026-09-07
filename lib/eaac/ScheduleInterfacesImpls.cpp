@@ -42,6 +42,51 @@ struct MatmulScheduleModel
   }
 };
 
+struct AddScheduleModel
+    : public eaac::detail::ScheduleInterfaceInterfaceTraits::ExternalModel<
+          AddScheduleModel, linalg::AddOp> {
+  Operation *checkSchedule(Operation *op, Region *region) const {
+
+    llvm::SmallVector<eaac::HardwareAllocOp> hardware_units;
+
+    region->front().walk([&](eaac::HardwareAllocOp funit) {
+      if (isa<eaac::RISCType>(funit.getFunit()))
+        hardware_units.push_back(funit);
+    });
+
+    // TODO, impement more intelligment scheduling for multible hardware units
+
+    if(!hardware_units.empty()) {
+      return hardware_units.pop_back_val();
+    } else {
+      return nullptr;
+    }
+  }
+};
+
+struct GenericScheduleModel
+    : public eaac::detail::ScheduleInterfaceInterfaceTraits::ExternalModel<
+          GenericScheduleModel, linalg::GenericOp> {
+  Operation *checkSchedule(Operation *op, Region *region) const {
+
+    llvm::SmallVector<eaac::HardwareAllocOp> hardware_units;
+
+    region->front().walk([&](eaac::HardwareAllocOp funit) {
+      if (isa<eaac::RISCType>(funit.getFunit()))
+        hardware_units.push_back(funit);
+    });
+
+    // TODO, impement more intelligment scheduling for multible hardware units
+
+    if(!hardware_units.empty()) {
+      return hardware_units.pop_back_val();
+    } else {
+      return nullptr;
+    }
+  }
+};
+
+
 } // namespace
 
 void mlir::eaac::registerScheduleOpInterfaceExternalModels(
@@ -50,5 +95,7 @@ void mlir::eaac::registerScheduleOpInterfaceExternalModels(
       +[](MLIRContext *ctx, eaac::EAACDialect *eaacDialect,
           linalg::LinalgDialect *linalgDialect) {
         linalg::MatmulOp::attachInterface<MatmulScheduleModel>(*ctx);
+        linalg::AddOp::attachInterface<AddScheduleModel>(*ctx);
+        linalg::GenericOp::attachInterface<GenericScheduleModel>(*ctx);
       });
 }

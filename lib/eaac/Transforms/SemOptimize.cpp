@@ -63,7 +63,7 @@ private:
       llvm::DenseMap<mlir::Operation*, int64_t> work;
 
       // Build set of operations conforming to speific hardware op
-      llvm::SmallPtrSet<mlir::Operation *, 16> userOps;
+      llvm::SetVector<mlir::Operation *> userOps;
       auto uses = SymbolTable::getSymbolUses(hwOp, moduleOp);
       for(auto user : *uses) {
         if(Operation *userOp = user.getUser())
@@ -104,7 +104,7 @@ private:
       auto parentExecute = dyn_cast<eaac::ExecuteOp>(key->getParentOp());
       if(!parentExecute)
         continue;
-      llvm::SmallVector<eaac::SemRequireOp, 4> requireOps = parentExecute.getRequireOps();
+      llvm::SmallVector<eaac::SemRequireOp> requireOps = parentExecute.getRequireOps();
       // TODO check for aliasing chaining
 
       for(eaac::SemRequireOp requireOp : requireOps) {
@@ -122,19 +122,22 @@ private:
 
           for (Value chainedSem : parent.getChainsFrom()) {
             LLVM_DEBUG(llvm::dbgs() << "Checking chain: sem_alloc=" << parent.getSemaphore()
+                                     << " chained_sem=" << chainedSem << "\n");
 
             bool cull = checkChain(parent, chainedSem, work, pipeline_depth.value());
 
-            if(cull) {
-              dontCull = false;
+            if(!cull) {
+              LLVM_DEBUG(llvm::dbgs() << "Broadcast semaphore cull cancelled: chains to other sem" << "\n");
+              dontCull = true;
             }
           }
 
           for(auto use : parent.getResult().getUsers()) {
             eaac::SemAllocOp chained = dyn_cast<SemAllocOp>(use);
 
+            if(chained) {
               if(!checkChain(chained, parent.getResult(), work, pipeline_depth.value())) {
-                //LLVM_DEBUG(llvm::dbgs() << "Broadcast semaphore cull cancelled: unable to clean chain from sem to other sem" << "\n");
+                LLVM_DEBUG(llvm::dbgs() << "Broadcast semaphore cull cancelled: unable to clean chain from sem to other sem" << "\n");
                 dontCull = true;
               }
             }
@@ -142,8 +145,9 @@ private:
 
 
           if(!dontCull) {
-            //LLVM_DEBUG(llvm::dbgs() << "CULLING BROADCAST SEM" << "\n");
-            cullSemaphore(parent);
+            LLVM_DEBUG(llvm::dbgs() << "CULLING BROADCAST SEM" << "\n");
+            //cullSemaphore(parent);
+            parent.cullSemaphore();
           }
 
         } else {
@@ -184,8 +188,10 @@ private:
                 }
               }
 
-              if(!dontCull)
-                cullSemaphore(parent);
+              if(!dontCull) {
+                //cullSemaphore(parent);
+                parent.cullSemaphore();
+              }
             }else{
               LLVM_DEBUG(llvm::dbgs() << "No implicit serialization, distance:" << distance << "\n");
             }
@@ -195,12 +201,6 @@ private:
       } 
     }
   };
-
-  
-
-
-
-
 
   static std::optional<int64_t> findDistance(mlir::Operation *earlier,
                                               mlir::Operation *later,
@@ -304,19 +304,24 @@ private:
   }
 
 
-  static void cullSemaphore(eaac::SemAllocOp op) {
+  //static void cullSemaphore(eaac::SemAllocOp op) {
 
-    LLVM_DEBUG(llvm::dbgs() << "CULLING SEM!" << "\n");
+  //  LLVM_DEBUG(llvm::dbgs() << "CULLING SEM!" << "\n");
 
-    for(auto user : op.getResult().getUsers()) {
-      user->erase();
-    }
-    if(op.use_empty())
-      op.erase();
+  //  for(auto user : op.getResult().getUsers()) {
+  //    if(!isa<eaac::SemAllocOp>(user)) {
+  //      user->erase();
+  //    } else {
+  //      LLVM_DEBUG(llvm::dbgs() << "attempting to cull sem still chained to alloc, cancelled" << "\n");
+  //    };
+  //  }
+  //  if(op.use_empty())
+  //    op.erase();
 
-    return; 
-  }
+  //  return; 
+  //}
 
+  /*
   static void processTransitivity(func::FuncOp funcOp){
     // Step 1: Number all operations
     llvm::DenseMap<Operation *, int64_t> opTime;
@@ -344,9 +349,7 @@ private:
 
       });
     });
-
   };
-
 
   static bool transitivelyOrdered(
       eaac::SemRequireOp later, eaac::SemAcquireOp earlier,
@@ -402,6 +405,7 @@ private:
     }
     return false;
   }
+  */
 
 
 

@@ -167,6 +167,11 @@ def SemAllocOp : EAAC_Op<"sem_alloc", [
     (`event_mode` `=` $event_mode^)?
     attr-dict `:` type($semaphore)
   }];
+
+  let extraClassDeclaration = [{
+    void cullSemaphore();
+  }];
+
 }
 
 //===----------------------------------------------------------------------===//

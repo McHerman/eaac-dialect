@@ -240,12 +240,36 @@ def Schedule : Pass<"eaac-schedule", "mlir::ModuleOp"> {
   ];
 }
 
+def StripSchedule : Pass<"eaac-strip-schedule", "mlir::ModuleOp"> {
+  let summary = "TODO: one-line summary";
+  let description = [{
+    TODO: longer description.
+  }];
+  let constructor = "mlir::eaac::createStripSchedulePass()";
+
+  let dependentDialects = [
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
 def SemOptimize : Pass<"eaac-sem-optimize", "mlir::ModuleOp"> {
   let summary = "Semaphore optimizations";
   let description = [{
 
   }];
   let constructor = "mlir::eaac::createSemOptimizePass()";
+
+  let dependentDialects = [
+    "mlir::eaac::EAACDialect"
+  ];
+}
+
+def SemOptimizeQueue : Pass<"eaac-sem-optimize-queue", "mlir::ModuleOp"> {
+  let summary = "TODO: one-line summary";
+  let description = [{
+    TODO: longer description.
+  }];
+  let constructor = "mlir::eaac::createSemOptimizeQueuePass()";
 
   let dependentDialects = [
     "mlir::eaac::EAACDialect"

@@ -7,6 +7,7 @@
 #include "eaac/Dialect.h"
 
 #include "llvm/ADT/TypeSwitch.h"
+#include <optional>
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
@@ -131,7 +132,15 @@ SemAcquireOp ExecuteOp::getAcquireOp() {
   return ops.empty() ? nullptr : *ops.begin();
 }
 
+//sdt::optional<SmallVector<SemRequireOp, 4>> ExecuteOp::getRequireOps() {
 SmallVector<SemRequireOp, 4> ExecuteOp::getRequireOps() {
+  /*
+  if(!getBody().getOps<SemRequireOp>().empty()) {
+    return llvm::to_vector(getBody().getOps<SemRequireOp>());
+  } else {
+    return std::nullopt:
+  }
+  */
   return llvm::to_vector(getBody().getOps<SemRequireOp>());
 }
 
@@ -151,6 +160,23 @@ LogicalResult ExecuteOp::verify() {
     return emitOpError("expects at most one sem_acquire in body, found ")
            << acquireCount;
   return success();
+}
+
+
+//===----------------------------------------------------------------------===//
+// SemAllocOp
+//===----------------------------------------------------------------------===//
+
+void SemAllocOp::cullSemaphore() {
+  for(auto user : getResult().getUsers()) {
+    if(!isa<eaac::SemAllocOp>(user)) {
+      user->erase();
+    } else {
+      //LLVM_DEBUG(llvm::dbgs() << "attempting to cull sem still chained to alloc, cancelled" << "\n");
+    };
+  }
+  if(use_empty())
+    erase();
 }
 
 //===----------------------------------------------------------------------===//

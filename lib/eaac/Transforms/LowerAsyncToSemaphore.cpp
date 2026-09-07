@@ -265,8 +265,6 @@ private:
 
         producerAlloc.setEventMode(EventMode::R);
 
-        llvm::dbgs() << "adding R-mode to semaphore" << "\n";
-
         // Redirect the remaining dep uses to the broadcast token (those
         // dep operands get dropped by AsyncExecuteToEaacExecute anyway).
         Value chainToken = producerExec.getToken();
@@ -277,8 +275,6 @@ private:
         //continue;
       }
 
-
-      llvm::dbgs() << "adding chain to semaphore" << "\n";
 
       // Append predSem to the producer's chains_from.
       producerAlloc->insertOperands(producerAlloc->getNumOperands(), predSem);
