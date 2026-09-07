@@ -50,6 +50,7 @@ test-almost-full input="riscv-extrasmall":
     --eaac-find-alias-dependency \
     --eaac-lower-async-to-semaphore \
     --eaac-schedule \
+    --eaac-sem-optimize \
     --eaac-assign-semaphore-addresses \
     "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
     --transform-interpreter \
@@ -68,7 +69,7 @@ test-almost-full input="riscv-extrasmall":
     #--eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
 
 
-test-sem input="sem_optimization_test":
+test-sem input="sem_optimization_test": build
     {{eaac_opt}} \
     --one-shot-bufferize="bufferize-function-boundaries" \
     --inline \
@@ -84,6 +85,10 @@ test-sem input="sem_optimization_test":
     --eaac-lower-async-to-semaphore \
     --eaac-schedule \
     --eaac-sem-optimize \
+    --eaac-sem-optimize-queue \
+    --eaac-assign-semaphore-addresses \
+    -mlir-timing \
+    -debug-only=eaac-sem-optimize-queue \
     test/{{input}}.mlir
 
 test-single input pass:
@@ -120,6 +125,8 @@ translate input="input_8_tiny": build
     --eaac-find-alias-dependency \
     --eaac-lower-async-to-semaphore \
     --eaac-schedule \
+    --eaac-sem-optimize \
+    --eaac-sem-optimize-queue \
     --eaac-assign-semaphore-addresses \
     "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
     --transform-interpreter \
@@ -135,6 +142,7 @@ translate input="input_8_tiny": build
     cp {{input}}.reference.json ../../hardware/ATAN/test
     mkdir -p ../../hardware/ATAN/test/{{input}}
     cp {{input}}.ll ../../hardware/ATAN/test/{{input}}/{{input}}.ll
+    cd ../../hardware/ATAN/test/{{input}} && make
 
 translate-riscv input="ad-bottleneck-8tile-baseline":
     {{eaac_opt}} \

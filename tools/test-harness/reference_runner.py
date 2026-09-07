@@ -17,7 +17,12 @@ SEED = 42
 LLVM_BUILD = os.environ.get(
     "LLVM_BUILD", os.path.expanduser("~/dtu/Thesis/MLIR/llvm-project/build")
 )
-MLIR_OPT = os.path.join(LLVM_BUILD, "bin", "mlir-opt")
+
+MLIR_BUILD = os.environ.get(
+    "MLIR_BUILD", os.path.expanduser("~/dtu/Thesis/MLIR/eaac-dialect/build")
+)
+
+MLIR_OPT = os.path.join(MLIR_BUILD, "bin", "eaac-opt")
 MLIR_RUNNER = os.path.join(LLVM_BUILD, "bin", "mlir-runner")
 RUNNER_UTILS = os.path.join(LLVM_BUILD, "lib", "libmlir_runner_utils.so")
 C_RUNNER_UTILS = os.path.join(LLVM_BUILD, "lib", "libmlir_c_runner_utils.so")
@@ -112,8 +117,19 @@ def main():
     with open(args.input) as f:
         src = f.read()
 
+    # Strip eaac schedule from mlir.
+    strip_cmd = [
+        MLIR_OPT,
+        "--eaac-strip-schedule",
+    ]
+
+    stripped = subprocess.run(strip_cmd, input=src, capture_output=True, text=True)
+    if stripped.returncode != 0:
+        sys.exit(f"mlir-opt (strip) failed:\n{stripped.stderr}")
+
+
     print("Running instrument → bufferize → lower → execute...", flush=True)
-    inputs, matrices, output_widths = run(src)
+    inputs, matrices, output_widths = run(stripped.stdout)
     print(f"Generated {len(inputs)} input tensors, parsed {len(matrices)} result matrices")
 
     if not matrices:
