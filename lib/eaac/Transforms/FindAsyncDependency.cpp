@@ -20,6 +20,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -89,10 +90,10 @@ private:
 
   // Collect the set of async.executes that produced any memref read inside
   // `exec`, excluding `exec` itself.
-  static llvm::DenseSet<async::ExecuteOp> collectDeps(
+  static llvm::SetVector<async::ExecuteOp> collectDeps(
       async::ExecuteOp exec,
       const llvm::DenseMap<Value, async::ExecuteOp> &writer) {
-    llvm::DenseSet<async::ExecuteOp> deps;
+    llvm::SetVector<async::ExecuteOp> deps;
     exec.getBody()->walk([&](Operation *innerOp) {
       for (Value operand : innerOp->getOperands()) {
         if (!isa<MemRefType>(operand.getType()))
@@ -109,7 +110,7 @@ private:
   // Replace `exec` with an equivalent async.execute that additionally
   // depends on `deps`. Returns the new op.
   static async::ExecuteOp rewriteWithDeps(
-      async::ExecuteOp exec, const llvm::DenseSet<async::ExecuteOp> &deps) {
+      async::ExecuteOp exec, const llvm::SetVector<async::ExecuteOp> &deps) {
     llvm::SmallVector<Value> newDeps(exec.getDependencies());
     for (auto dep : deps)
       newDeps.push_back(dep.getToken());

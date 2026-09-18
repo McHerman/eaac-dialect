@@ -293,7 +293,12 @@ private:
   void insertSemDeallocs(func::FuncOp funcOp,
                          llvm::DenseMap<Value, Value> &tokenToSem) {
     OpBuilder builder(funcOp);
-    for (auto &[token, sem] : tokenToSem) {
+    // Iterate semaphores in deterministic IR order (walk over sem_allocs)
+    // rather than DenseMap hash order, so that sem_deallocs placed after the
+    // same ExecuteOp get a stable relative ordering. Downstream passes
+    // (e.g. AssignSemaphoreAddresses) depend on this op ordering.
+    funcOp.walk([&](SemAllocOp allocOp) {
+      Value sem = allocOp.getSemaphore();
       for (Operation *user : sem.getUsers()) {
         auto parentExec = user->getParentOfType<ExecuteOp>();
         if (!parentExec)
@@ -302,7 +307,7 @@ private:
         SemDeallocOp::create(builder, parentExec.getLoc(), sem);
         break;
       }
-    }
+    });
   }
 };
 
