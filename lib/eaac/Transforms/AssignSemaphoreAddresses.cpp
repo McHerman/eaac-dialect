@@ -19,8 +19,10 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include <algorithm>
 
 #define DEBUG_TYPE "assign-semaphore-addresses"
 
@@ -42,14 +44,8 @@ struct SemInterval {
   int64_t address;      // Assigned hardware address (-1 = unassigned)
   int64_t generation;   // Per-address generation tag (wraps mod num_generations)
   bool reused;          // True if this reuses an address from a live semaphore
-  // Channel binding (from StreamingChannelAnalysis). When set, the semaphore
-  // rotates through its channel's pre-reserved ring instead of going through
-  // the linear-scan pool.
-  llvm::StringRef channelName;
-  int64_t channelDepth = 1;
-  int64_t channelIdx = -1;
-  bool onChannel() const { return !channelName.empty(); }
-
+  
+  
   SemInterval()
       : allocOp(nullptr), deallocOp(nullptr), start(0), end(0), address(-1),
         generation(0), reused(false) {}
@@ -115,11 +111,8 @@ public:
       return signalPassFailure();
     }
 
-    auto &channelAnalysis = getAnalysis<StreamingChannelAnalysis>();
-
     auto result = module.walk([&](func::FuncOp funcOp) -> WalkResult {
-      if (failed(processFunction(funcOp, *numPairs, *numGenerations,
-                                 channelAnalysis)))
+      if (failed(processFunction(funcOp, *numPairs, *numGenerations)))
         return WalkResult::interrupt();
       return WalkResult::advance();
     });
@@ -139,8 +132,8 @@ private:
   /// Build live intervals for all semaphore values.
   llvm::SmallVector<SemInterval>
   buildIntervals(func::FuncOp funcOp,
-                 const llvm::DenseMap<Operation *, int64_t> &opNumbers,
-                 const StreamingChannelAnalysis &channelAnalysis) {
+                 const llvm::DenseMap<Operation *, int64_t> &opNumbers) {
+
     llvm::SmallVector<SemInterval> intervals;
     llvm::DenseMap<Value, size_t> semToIdx;
 
@@ -158,14 +151,7 @@ private:
       interval.start = opNumbers.lookup(semAllocOp);
       interval.end = interval.start;
 
-      /*
-      if (auto ch = channelAnalysis.getAssignment(semAllocOp.getSemaphore())) {
-        interval.channelName = ch->name;
-        interval.channelDepth = ch->depth;
-        interval.channelIdx = ch->index;
-      }
-      */
-
+      // Seems a little dodgy
       semToIdx[semAllocOp.getSemaphore()] = intervals.size();
 
       const int64_t allocTime = opNumbers.lookup(semAllocOp);
@@ -216,7 +202,7 @@ private:
     });
 
     // Sort by start position.
-    std::sort(intervals.begin(), intervals.end());
+    llvm::stable_sort(intervals);
 
     LLVM_DEBUG({
       llvm::dbgs() << "Semaphore intervals (" << intervals.size() << "):\n";
@@ -230,13 +216,6 @@ private:
     return intervals;
   }
 
-  /// Run the linear scan allocator. Returns failure if an eviction is unsafe.
-  ///
-  /// Channel-bound intervals (identified by StreamingChannelAnalysis) bypass
-  /// the linear scan entirely and rotate through a per-channel ring carved
-  /// out at the top of the address space. The remaining intervals use the
-  /// linear scan against `[0, scanCap)`. The pools are disjoint so the linear
-  /// scan never observes ring-occupied addresses.
   LogicalResult allocate(llvm::SmallVector<SemInterval> &intervals,
                          int64_t numPairs, int64_t numGenerations) {
     // Per-hardware-address generation counter. Each time an address is
@@ -373,12 +352,6 @@ private:
     return success();
   }
 
-  /// Drop sem_require ops whose producer is on the same channel at queue
-  /// distance >= K — the FU's drain pipeline already serializes them. Then
-  /// sweep any sem_alloc that's been left without sem_require users (along
-  /// with its matching sem_acquire / sem_dealloc). Runs before buildIntervals
-  /// so the allocator never sees the elided semaphores.
-  /// Annotate sem_alloc ops with assigned addresses.
   void annotateIR(const llvm::SmallVector<SemInterval> &intervals) {
     for (const auto &iv : intervals) {
       auto *op = iv.allocOp;
@@ -398,18 +371,16 @@ private:
 
       if (iv.reused) {
         op->setAttr("eaac.sem_reused", UnitAttr::get(ctx));
-        //op->emitWarning("semaphore address reused due to register pressure — "
-        //                "correctness depends on self-sequencing guarantee");
       }
     }
   }
 
   LogicalResult
   processFunction(func::FuncOp funcOp, int64_t numPairs,
-                  int64_t numGenerations,
-                  const StreamingChannelAnalysis &channelAnalysis) {
+                  int64_t numGenerations) {
+
     auto opNumbers = numberOperations(funcOp);
-    auto intervals = buildIntervals(funcOp, opNumbers, channelAnalysis);
+    auto intervals = buildIntervals(funcOp, opNumbers);
 
     if (intervals.empty())
       return success();
