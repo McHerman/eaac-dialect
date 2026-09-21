@@ -13,10 +13,17 @@
 // RUN: --eaac-lower-async-to-semaphore \
 // RUN: --eaac-schedule \
 // RUN: --eaac-sem-optimize \
-// RUN: -debug-only=eaac-sem-optimize \
+
 // RUN:   | FileCheck %s
 
 // CHECK-LABEL: func.func @main
+
+// CHECK: %sem_12 = eaac.sem_alloc(%c256, %c0) chains_from(%sem : !eaac.semaphore<addr = 0, gen = 0>) : <addr = 0, gen = 0>
+// CHECK: %sem_18 = eaac.sem_alloc(%c256, %c0) : <addr = 0, gen = 0>
+// CHECK: %sem_20 = eaac.sem_alloc(%c256, %c0) : <addr = 0, gen = 0>
+
+
+
 
 module attributes {
   dlti.target_system_spec = #dlti.target_system_spec<
@@ -41,7 +48,7 @@ module attributes {
 
 
   eaac.schedule @schedule {
-    eaac.hw_alloc @unit0 : !eaac.gemm<2>
+    eaac.hw_alloc @unit0 : !eaac.gemm<2 32>
   }
 
   func.func @main(%arg0: tensor<16x16xi8>, %arg1: tensor<16x16xi8>) -> tensor<16x16xi8> {
