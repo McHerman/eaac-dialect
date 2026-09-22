@@ -2,7 +2,6 @@ add_mlir_library(EAACTransforms
   CollectAllocDealloc.cpp
   MemoryAlloc.cpp
   MemRefLivenessAnalysis.cpp
-  StreamingChannelAnalysis.cpp
   LocalStaging.cpp
   LowerCopyToDma.cpp
   EncodeDependencies.cpp

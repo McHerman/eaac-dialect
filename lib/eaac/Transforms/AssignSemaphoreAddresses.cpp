@@ -12,7 +12,6 @@
 
 #include "eaac/Dialect.h"
 #include "eaac/Passes.h"
-#include "eaac/StreamingChannelAnalysis.h"
 
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
