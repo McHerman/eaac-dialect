@@ -36,7 +36,7 @@ clean:
 # Rebuild from scratch
 rebuild: clean all
 
-test-almost-full input="riscv-extrasmall":
+test-almost-full input="input_8_tiny": build
     {{eaac_opt}} --one-shot-bufferize="bufferize-function-boundaries" \
     --inline \
     --canonicalize \
@@ -51,22 +51,15 @@ test-almost-full input="riscv-extrasmall":
     --eaac-lower-async-to-semaphore \
     --eaac-schedule \
     --eaac-sem-optimize \
+    --eaac-sem-optimize-queue \
     --eaac-assign-semaphore-addresses \
     "--transform-preload-library=transform-library-paths=test/linalg-to-eaac.transform.mlir" \
     --transform-interpreter \
     --eaac-legalize-for-hw \
     --eaac-riscv-kernel-to-function \
+    --eaac-riscv-kernel-to-llvm \
+    --eaac-lower-memref-to-llvm \
     test/{{input}}.mlir
-    #-debug-only=eaac-riscv-kernel-to-llvm \
-    #--eaac-riscv-kernel-to-llvm \
-    #--eaac-lower-memref-to-llvm \
-    #-debug-only=eaac-riscv-kernel-to-llvm \
-    #--eaac-schedule \
-    #--eaac-legalize-for-hw \
-    #--eaac-riscv-kernel-to-function \
-    #--eaac-riscv-kernel-to-llvm \
-    #--eaac-lower-memref-to-llvm \
-    #--eaac-split-llvm-from-eaac=llvm-output-file={{dir}}/{{input}}.ll \
 
 
 test-sem input="sem_optimization_test": build
@@ -138,9 +131,9 @@ translate input="input_8_tiny": build
     test/{{input}}.mlir -o /tmp/{{input}}.eaac-stage.mlir
     {{build_dir}}/bin/eaac-translate --eaac-to-flatbuffer -o {{input}}.eaac /tmp/{{input}}.eaac-stage.mlir
     python tools/test-harness/reference_runner.py test/{{input}}.mlir -o {{input}}.reference.json
-    cp {{input}}.eaac ../../hardware/ATAN/test
-    cp {{input}}.reference.json ../../hardware/ATAN/test
     mkdir -p ../../hardware/ATAN/test/{{input}}
+    cp {{input}}.eaac ../../hardware/ATAN/test/{{input}}
+    cp {{input}}.reference.json ../../hardware/ATAN/test/{{input}}
     cp {{input}}.ll ../../hardware/ATAN/test/{{input}}/{{input}}.ll
     cd ../../hardware/ATAN/test/{{input}} && make
 
@@ -155,8 +148,8 @@ translate-riscv input="ad-bottleneck-8tile-baseline":
     --convert-func-to-llvm="use-bare-ptr-memref-call-conv" \
     --finalize-memref-to-llvm \
     --convert-cf-to-llvm --convert-index-to-llvm --reconcile-unrealized-casts \
-    test/{{input}}.mlir -o /tmp/{{input}}.baseline-stage.mlir
-    {{llvm_build_dir}}/bin/mlir-translate --mlir-to-llvmir /tmp/{{input}}.baseline-stage.mlir \
+    test/{{input}}.mlir -o {{input}}.baseline-stage.mlir
+    {{llvm_build_dir}}/bin/mlir-translate --mlir-to-llvmir {{input}}.baseline-stage.mlir \
     -o ../../hardware/ATAN/test/{{input}}/{{input}}.ll
 
 demo input="ad-bottleneck-8tile-baseline":
