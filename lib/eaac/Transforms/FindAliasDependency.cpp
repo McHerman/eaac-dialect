@@ -325,6 +325,8 @@ public:
           continue;
         }
 
+        LLVM_DEBUG(llvm::dbgs() << "creating chain" << "\n";);
+
         OpBuilder builder(writerExec.getBody(), writerExec.getBody()->begin());
         ChainOp::create(builder, writerExec.getLoc(), readerRequire.getToken(),
                         /*is_broadcast=*/false);

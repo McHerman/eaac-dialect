@@ -4,13 +4,20 @@
 module attributes {
   dlti.target_system_spec = #dlti.target_system_spec<
     "EAAC" = #dlti.target_device_spec<
-      "tier_capacities" = array<i64: 1024, 2048, 16384>,
-      "alias_check_length" = 128 : i64,
-      "num_semaphore_pairs" = 16 : i64,
-      "num_semaphore_generations" = 4 : i64
+      "tier_capacities" = array<i64: 2048, 4096, 4096>,
+      //"tier_capacities" = array<i64: 65536, 65536, 65536>,
+      "alias_check_length" = 4096 : i64,
+      "reuse_guard" = 100000 : i64,
+      "num_semaphore_pairs" = 8 : i64,
+      "num_semaphore_generations" = 4 : i64,
+      "bus_size" = 8 : i64
     >
   >
 } {
+  eaac.schedule @schedule {
+    eaac.hw_alloc @unit0 : !eaac.gemm<2 32>
+  }
+
   func.func private @matmul(%arg0: tensor<8x8xi8>, %arg1: tensor<8x8xi8>) -> tensor<8x8xi8> {
     %cst = arith.constant 0 : i8
     %init = tensor.empty() : tensor<8x8xi8>

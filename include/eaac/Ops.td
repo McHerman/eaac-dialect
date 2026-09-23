@@ -8,11 +8,15 @@
 #define EAAC_OPS
 
 include "eaac/EAAC.td"
+include "eaac/Traits.td"
 include "eaac/Types.td"
+include "eaac/IR/EAACOpInterfaces.td"
 include "mlir/Dialect/Async/IR/AsyncTypes.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/SymbolInterfaces.td"
+
 
 //===----------------------------------------------------------------------===//
 // EventMode enum: controls when a semaphore fires events on the scoreboard.
@@ -163,6 +167,11 @@ def SemAllocOp : EAAC_Op<"sem_alloc", [
     (`event_mode` `=` $event_mode^)?
     attr-dict `:` type($semaphore)
   }];
+
+  let extraClassDeclaration = [{
+    void cullSemaphore();
+  }];
+
 }
 
 //===----------------------------------------------------------------------===//
@@ -213,6 +222,20 @@ def ExecuteOp : EAAC_Op<"execute", [NoTerminator]> {
   let assemblyFormat = [{
     attr-dict-with-keyword regions
   }];
+
+  let extraClassDeclaration = [{
+    /// The single non-semaphore op in the body -- the actual hardware work.
+    /// Well-formedness (exactly one such op) is enforced by the verifier.
+    Operation *getPayloadOp();
+
+    /// The sem_acquire op in the body, if any.
+    SemAcquireOp getAcquireOp();
+
+    /// All sem_require ops in the body.
+    SmallVector<SemRequireOp, 4> getRequireOps();
+  }];
+
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -248,6 +271,11 @@ def SemRequireOp : EAAC_Op<"sem_require", [
   let assemblyFormat = [{
     $semaphore `,` $memref (`chains_from` `(` $chains_from^ `:` type($chains_from) `)`)?
     attr-dict `:` type($semaphore) `,` type($memref)
+  }];
+
+  let extraClassDeclaration = [{
+    /// The sem_acquire that produces this require's semaphore, if any.
+    SemAcquireOp getProducer();
   }];
 }
 
@@ -380,6 +408,35 @@ def ChainOp : EAAC_Op<"chain"> {
 
   let assemblyFormat = [{
     $predecessor (`broadcast` $is_broadcast^)? attr-dict
+  }];
+}
+
+def HardwareScheduleOp : EAAC_Op<"schedule", [Symbol, SymbolTable, NoTerminator]> {
+  let summary = "Named scope grouping hardware unit definitions and schedule info";
+  let description = [{
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name);
+  let regions = (region AnyRegion:$body);
+
+  let assemblyFormat = [{
+    $sym_name attr-dict-with-keyword regions
+  }];
+}
+
+def HardwareAllocOp : EAAC_Op<"hw_alloc",
+    [Symbol, HardwareUnitTrait, HardwareUnitOpInterface]> {
+  let summary = "Allocate a hardware functional unit";
+  let description = [{
+    Declares a named hardware unit instance (e.g. a GEMM, load, store, or
+    RISC-V core), declared inside an eaac.schedule's body and referenced
+    from elsewhere in the module via the qualified symbol
+    `@schedule_name::@unit_name`.
+  }];
+  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttrOf<AnyFunitType>:$funit);
+
+  let assemblyFormat = [{
+    $sym_name attr-dict `:` $funit
   }];
 }
 

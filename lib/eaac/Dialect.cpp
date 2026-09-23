@@ -7,6 +7,7 @@
 #include "eaac/Dialect.h"
 
 #include "llvm/ADT/TypeSwitch.h"
+#include <optional>
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
@@ -19,6 +20,12 @@ using namespace mlir::eaac;
 //===----------------------------------------------------------------------===//
 
 #include "eaac/Dialect.cpp.inc"
+
+//===----------------------------------------------------------------------===//
+// TableGen'd type interface definitions
+//===----------------------------------------------------------------------===//
+
+#include "eaac/IR/EAACTypeInterfaces.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 // TableGen'd type definitions
@@ -108,10 +115,89 @@ void StoreOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+//===----------------------------------------------------------------------===//
+// ExecuteOp
+//===----------------------------------------------------------------------===//
+
+Operation *ExecuteOp::getPayloadOp() {
+  Operation *payload = nullptr;
+  for (Operation &op : getBody().getOps())
+    if (!isa<SemRequireOp, SemAcquireOp>(op))
+      payload = &op;
+  return payload;
+}
+
+SemAcquireOp ExecuteOp::getAcquireOp() {
+  auto ops = getBody().getOps<SemAcquireOp>();
+  return ops.empty() ? nullptr : *ops.begin();
+}
+
+//sdt::optional<SmallVector<SemRequireOp, 4>> ExecuteOp::getRequireOps() {
+SmallVector<SemRequireOp, 4> ExecuteOp::getRequireOps() {
+  /*
+  if(!getBody().getOps<SemRequireOp>().empty()) {
+    return llvm::to_vector(getBody().getOps<SemRequireOp>());
+  } else {
+    return std::nullopt:
+  }
+  */
+  return llvm::to_vector(getBody().getOps<SemRequireOp>());
+}
+
+LogicalResult ExecuteOp::verify() {
+  int64_t payloadCount = 0;
+  int64_t acquireCount = 0;
+  for (Operation &op : getBody().getOps()) {
+    if (isa<SemAcquireOp>(op))
+      acquireCount++;
+    else if (!isa<SemRequireOp>(op))
+      payloadCount++;
+  }
+  if (payloadCount != 1)
+    return emitOpError("expects exactly one non-semaphore op in body, found ")
+           << payloadCount;
+  if (acquireCount > 1)
+    return emitOpError("expects at most one sem_acquire in body, found ")
+           << acquireCount;
+  return success();
+}
+
+
+//===----------------------------------------------------------------------===//
+// SemAllocOp
+//===----------------------------------------------------------------------===//
+
+void SemAllocOp::cullSemaphore() {
+  for(auto user : getResult().getUsers()) {
+    if(!isa<eaac::SemAllocOp>(user)) {
+      user->erase();
+    } else {
+      //LLVM_DEBUG(llvm::dbgs() << "attempting to cull sem still chained to alloc, cancelled" << "\n");
+    };
+  }
+  if(use_empty())
+    erase();
+}
+
+//===----------------------------------------------------------------------===//
+// SemRequireOp
+//===----------------------------------------------------------------------===//
+
+SemAcquireOp SemRequireOp::getProducer() {
+  for (Operation *user : getSemaphore().getUsers())
+    if (auto acquire = dyn_cast<SemAcquireOp>(user))
+      return acquire;
+  return nullptr;
+}
+
 #include "eaac/EAACEnums.cpp.inc"
+
+#include "eaac/IR/EAACOpInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "eaac/Ops.cpp.inc"
+
+#include "eaac/IR/EAACScheduleInterfaces.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 // EAAC Dialect

@@ -204,8 +204,7 @@ private:
     for (eaac::ChainOp chainOp : chainOps) {
       bool isBroadcast = chainOp.getIsBroadcast();
 
-      // The enclosing async.execute is the writer; the SemAllocOp gating its
-      // output signal is the one we need to add a chain to.
+      // This is the op which is chained to previous op
       auto producerExec = chainOp->getParentOfType<async::ExecuteOp>();
       if (!producerExec) {
         chainOp.emitWarning(
@@ -214,7 +213,7 @@ private:
         continue;
       }
 
-      // Resolve predecessor token → hardware semaphore.
+      // This is the semaphore of the which the op is chained to
       auto it = tokenToSem.find(chainOp.getPredecessor());
       if (it == tokenToSem.end()) {
         chainOp.emitWarning(
@@ -227,9 +226,7 @@ private:
       }
       Value predSem = it->second;
 
-      // Find the producer's SemAcquireOp (one was inserted in
-      // buildTokenToSemMap) — its semaphore SSA value is defined by the
-      // SemAllocOp we want to chain.
+      // Find the acquire op
       SemAcquireOp producerAcquire = nullptr;
       producerExec.getBody()->walk([&](SemAcquireOp acq) {
         producerAcquire = acq;
@@ -243,6 +240,8 @@ private:
         chainOp.erase();
         continue;
       }
+
+      // Acquire semaphore allocation.
       auto producerAlloc =
           producerAcquire.getSemaphore().getDefiningOp<SemAllocOp>();
       if (!producerAlloc) {
@@ -267,22 +266,24 @@ private:
 
         producerAlloc.setEventMode(EventMode::R);
 
-
         // Redirect the remaining dep uses to the broadcast token (those
         // dep operands get dropped by AsyncExecuteToEaacExecute anyway).
         Value chainToken = producerExec.getToken();
         chainToken.replaceAllUsesWith(chainOp.getPredecessor());
 
-        // Erase the chain exec — nukes producerAcquire, chainOp, and
-        // async.yield in one shot. chainOp is invalid after this; skip the
-        // trailing common path.
+        // Removes unessecary artificial async::ExecuteOp only containing chain.
         producerExec.erase();
-        continue;
+        //continue;
       }
+
 
       // Append predSem to the producer's chains_from.
       producerAlloc->insertOperands(producerAlloc->getNumOperands(), predSem);
-      chainOp.erase();
+
+      // In the broadcast case, chainOp was already destroyed when
+      // producerExec (its parent) was erased above.
+      if (!isBroadcast)
+        chainOp.erase();
     }
   }
 
@@ -293,7 +294,12 @@ private:
   void insertSemDeallocs(func::FuncOp funcOp,
                          llvm::MapVector<Value, Value> &tokenToSem) {
     OpBuilder builder(funcOp);
-    for (auto &[token, sem] : tokenToSem) {
+    // Iterate semaphores in deterministic IR order (walk over sem_allocs)
+    // rather than DenseMap hash order, so that sem_deallocs placed after the
+    // same ExecuteOp get a stable relative ordering. Downstream passes
+    // (e.g. AssignSemaphoreAddresses) depend on this op ordering.
+    funcOp.walk([&](SemAllocOp allocOp) {
+      Value sem = allocOp.getSemaphore();
       for (Operation *user : sem.getUsers()) {
         auto parentExec = user->getParentOfType<ExecuteOp>();
         if (!parentExec)
@@ -302,7 +308,7 @@ private:
         SemDeallocOp::create(builder, parentExec.getLoc(), sem);
         break;
       }
-    }
+    });
   }
 };
 

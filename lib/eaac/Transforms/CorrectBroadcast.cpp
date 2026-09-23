@@ -45,8 +45,7 @@ private:
     int64_t time = 0;
     funcOp.walk([&](Operation *op) { opTime[op] = time++; });
 
-    // Phase 1: collect non-survivor requires. Don't mutate the IR here —
-    // creating/erasing inside a walk can invalidate the walker's cursor.
+    // Collect all but the first require in order of execution when encountering broadcast.
     llvm::SmallVector<ChainPair> toRewire;
 
     funcOp.walk([&](async::ExecuteOp executeOp) {
@@ -58,9 +57,9 @@ private:
           return opTime.lookup(a) < opTime.lookup(b);
         });
 
-        if (users.size() < 2)
+        if (users.size() < 2) // A given operation only has a single consumer, and is therefore not a broadcast.
           return;                                  // sole user → keep
-        if (users.front() == requireOp.getOperation())
+        if (users.front() == requireOp.getOperation()) // The given op is the first of all broadcast consumers and will therefor be first chain link
           return;                                  // survivor → keep
 
         auto survivor = cast<RequireOp>(users.front());
@@ -68,7 +67,7 @@ private:
       });
     });
 
-    // Phase 2: mutate. Safe to create/rewire here — walks are done.
+    // Rewrite
     for (auto [requireOp, survivor] : toRewire) {
       Value broadcastToken = requireOp.getToken();
       auto consumerExec = requireOp->getParentOfType<async::ExecuteOp>();
@@ -82,10 +81,8 @@ private:
                      << "  survivor:  " << *survivor << "\n";
       });
 
-      // Build a new async.execute just before the consumer exec. It depends
-      // on the broadcast token and holds a single eaac.chain, so its
-      // semaphore pair is the one the consumer ends up waiting on instead of
-      // the shared broadcast token.
+
+      // Create new execute region, this is essentially just to trick later pipelines into creating a semaphore.
       OpBuilder builder(consumerExec);
       auto chainExec = async::ExecuteOp::create(
           builder, loc,
@@ -101,9 +98,7 @@ private:
                       /*is_broadcast=*/true);
       async::YieldOp::create(bodyBuilder, loc, ValueRange{});
 
-      // Rewire: the consumer's broadcast-token dependency becomes a
-      // dependency on the new chain exec, and the require's token operand
-      // points at the new token too.
+      // Change out the original token dependency with the new generated chained sem.
       Value newToken = chainExec.getToken();
       for (auto [i, dep] : llvm::enumerate(consumerExec.getDependencies())) {
         if (dep == broadcastToken) {

@@ -58,6 +58,18 @@ std::unique_ptr<Pass> createLowerAsyncToSemaphorePass();
 /// Creates pass to replace function args/returns with eaac.load/store
 std::unique_ptr<Pass> createInsertLoadStorePass();
 
+/// Creates pass to replace function args/returns with eaac.load/store
+std::unique_ptr<Pass> createSchedulePass();
+
+/// Creates pass to strip schedule annotations
+std::unique_ptr<Pass> createStripSchedulePass();
+
+// Creates pass to optimize semaphore allocations
+std::unique_ptr<Pass> createSemOptimizePass();
+
+// Creates pass to optimize semaphore allocations using queue-based scheduling
+std::unique_ptr<Pass> createSemOptimizeQueuePass();
+
 /// Creates pass to assign static hardware addresses to semaphore pairs
 std::unique_ptr<Pass> createAssignSemaphoreAddressesPass();
 

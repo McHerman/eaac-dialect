@@ -2,7 +2,6 @@ add_mlir_library(EAACTransforms
   CollectAllocDealloc.cpp
   MemoryAlloc.cpp
   MemRefLivenessAnalysis.cpp
-  StreamingChannelAnalysis.cpp
   LocalStaging.cpp
   LowerCopyToDma.cpp
   EncodeDependencies.cpp
@@ -12,6 +11,10 @@ add_mlir_library(EAACTransforms
   InsertRequire.cpp
   LowerAsyncToSemaphore.cpp
   InsertLoadStore.cpp
+  Schedule.cpp
+  StripSchedule.cpp
+  SemOptimize.cpp
+  SemOptimizeQueue.cpp
   AssignSemaphoreAddresses.cpp
   LegalizeForEaacHw.cpp
   LowerEaacMemrefToLLVM.cpp

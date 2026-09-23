@@ -12,15 +12,16 @@
 
 #include "eaac/Dialect.h"
 #include "eaac/Passes.h"
-#include "eaac/StreamingChannelAnalysis.h"
 
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include <algorithm>
 
 #define DEBUG_TYPE "assign-semaphore-addresses"
 
@@ -42,14 +43,8 @@ struct SemInterval {
   int64_t address;      // Assigned hardware address (-1 = unassigned)
   int64_t generation;   // Per-address generation tag (wraps mod num_generations)
   bool reused;          // True if this reuses an address from a live semaphore
-  // Channel binding (from StreamingChannelAnalysis). When set, the semaphore
-  // rotates through its channel's pre-reserved ring instead of going through
-  // the linear-scan pool.
-  llvm::StringRef channelName;
-  int64_t channelDepth = 1;
-  int64_t channelIdx = -1;
-  bool onChannel() const { return !channelName.empty(); }
-
+  
+  
   SemInterval()
       : allocOp(nullptr), deallocOp(nullptr), start(0), end(0), address(-1),
         generation(0), reused(false) {}
@@ -115,11 +110,8 @@ public:
       return signalPassFailure();
     }
 
-    auto &channelAnalysis = getAnalysis<StreamingChannelAnalysis>();
-
     auto result = module.walk([&](func::FuncOp funcOp) -> WalkResult {
-      if (failed(processFunction(funcOp, *numPairs, *numGenerations,
-                                 channelAnalysis)))
+      if (failed(processFunction(funcOp, *numPairs, *numGenerations)))
         return WalkResult::interrupt();
       return WalkResult::advance();
     });
@@ -139,31 +131,10 @@ private:
   /// Build live intervals for all semaphore values.
   llvm::SmallVector<SemInterval>
   buildIntervals(func::FuncOp funcOp,
-                 const llvm::DenseMap<Operation *, int64_t> &opNumbers,
-                 const StreamingChannelAnalysis &channelAnalysis) {
+                 const llvm::DenseMap<Operation *, int64_t> &opNumbers) {
+
     llvm::SmallVector<SemInterval> intervals;
     llvm::DenseMap<Value, size_t> semToIdx;
-
-
-    // Collect all sem_alloc ops.
-    /*
-    funcOp.walk([&](SemAllocOp allocOp) {
-      SemInterval interval;
-      interval.semaphore = allocOp.getSemaphore();
-      interval.allocOp = allocOp;
-      interval.start = opNumbers.lookup(allocOp);
-      interval.end = interval.start;
-
-      if (auto ch = channelAnalysis.getAssignment(allocOp.getSemaphore())) {
-        interval.channelName = ch->name;
-        interval.channelDepth = ch->depth;
-        interval.channelIdx = ch->index;
-      }
-
-      semToIdx[allocOp.getSemaphore()] = intervals.size();
-      intervals.push_back(interval);
-    });
-    */
 
     // Per-semaphore extended end times produced by chain dependencies.
     // Populated below as we walk sem_allocs; consumed by the dealloc loop.
@@ -179,14 +150,7 @@ private:
       interval.start = opNumbers.lookup(semAllocOp);
       interval.end = interval.start;
 
-      /*
-      if (auto ch = channelAnalysis.getAssignment(semAllocOp.getSemaphore())) {
-        interval.channelName = ch->name;
-        interval.channelDepth = ch->depth;
-        interval.channelIdx = ch->index;
-      }
-      */
-
+      // Seems a little dodgy
       semToIdx[semAllocOp.getSemaphore()] = intervals.size();
 
       const int64_t allocTime = opNumbers.lookup(semAllocOp);
@@ -237,7 +201,7 @@ private:
     });
 
     // Sort by start position.
-    std::sort(intervals.begin(), intervals.end());
+    llvm::stable_sort(intervals);
 
     LLVM_DEBUG({
       llvm::dbgs() << "Semaphore intervals (" << intervals.size() << "):\n";
@@ -251,13 +215,6 @@ private:
     return intervals;
   }
 
-  /// Run the linear scan allocator. Returns failure if an eviction is unsafe.
-  ///
-  /// Channel-bound intervals (identified by StreamingChannelAnalysis) bypass
-  /// the linear scan entirely and rotate through a per-channel ring carved
-  /// out at the top of the address space. The remaining intervals use the
-  /// linear scan against `[0, scanCap)`. The pools are disjoint so the linear
-  /// scan never observes ring-occupied addresses.
   LogicalResult allocate(llvm::SmallVector<SemInterval> &intervals,
                          int64_t numPairs, int64_t numGenerations) {
     // Per-hardware-address generation counter. Each time an address is
@@ -394,87 +351,6 @@ private:
     return success();
   }
 
-  /// Drop sem_require ops whose producer is on the same channel at queue
-  /// distance >= K — the FU's drain pipeline already serializes them. Then
-  /// sweep any sem_alloc that's been left without sem_require users (along
-  /// with its matching sem_acquire / sem_dealloc). Runs before buildIntervals
-  /// so the allocator never sees the elided semaphores.
-  void elideRedundantChannelSemaphores(
-      func::FuncOp funcOp, const StreamingChannelAnalysis &analysis) {
-    llvm::SmallVector<SemRequireOp> reqs;
-    funcOp.walk([&](SemRequireOp r) { reqs.push_back(r); });
-    for (SemRequireOp req : reqs) {
-      auto prod = analysis.getAssignment(req.getSemaphore());
-      auto cons = analysis.getAssignment(req->getParentOfType<ExecuteOp>());
-      if (!prod || !cons || prod->name != cons->name ||
-          cons->index - prod->index < prod->depth)
-        continue;
-      LLVM_DEBUG(llvm::dbgs() << "  elide sem_require: " << prod->name << "["
-                              << prod->index << "] -> [" << cons->index
-                              << "]\n");
-      req.getResult().replaceAllUsesWith(req.getMemref());
-      req.erase();
-    }
-
-    // Sweep orphaned sem_allocs (and their sem_acquire / sem_dealloc).
-    // A sem is sweepable iff every non-acquire/dealloc user is another
-    // SemAllocOp carrying it in `chains_from`. SemRequireOp (or anything
-    // else unexpected) means the semaphore is still load-bearing and we
-    // skip it. The orphan sweep is correctness-required: the assembler
-    // links every generation N to N+1 on the same address, so a surviving
-    // orphan whose signal never fires would deadlock the next generation.
-    //
-    // Dropping the chain edge when we sweep the chain target is safe
-    // because the only orphans we sweep are sems whose consumer waits were
-    // elided by `elideRedundantChannelSemaphores`, which already proved
-    // those producers/consumers are queue-serialized at the FU level. The
-    // chain existed as anti-aliasing protection — that protection is
-    // redundant once we've established queue order.
-    llvm::SmallVector<SemAllocOp> allocs;
-    funcOp.walk([&](SemAllocOp a) { allocs.push_back(a); });
-    for (SemAllocOp alloc : allocs) {
-      Value sem = alloc.getSemaphore();
-      bool sweepable = true;
-      llvm::SmallVector<SemAllocOp> chainUsers;
-      for (Operation *u : sem.getUsers()) {
-        if (isa<SemAcquireOp, SemDeallocOp>(u))
-          continue;
-        if (auto chainUser = dyn_cast<SemAllocOp>(u)) {
-          chainUsers.push_back(chainUser);
-          continue;
-        }
-        sweepable = false;
-        break;
-      }
-      if (!sweepable)
-        continue;
-
-      // Drop this sem from each chain user's chains_from operand list.
-      // Iterate indices high-to-low so the erases don't shift positions
-      // we still need to examine. With only one variadic on SemAllocOp
-      // there's no operand-segment-sizes attribute to update.
-      for (SemAllocOp chainUser : chainUsers) {
-        Operation *op = chainUser.getOperation();
-        for (int i = op->getNumOperands() - 1; i >= 0; --i) {
-          if (op->getOperand(i) == sem)
-            op->eraseOperand(i);
-        }
-      }
-
-      // Snapshot remaining users (acquires + deallocs) and erase.
-      for (Operation *u : llvm::SmallVector<Operation *>(sem.getUsers())) {
-        if (auto acq = dyn_cast<SemAcquireOp>(u)) {
-          acq.getResult().replaceAllUsesWith(acq.getMemref());
-          acq.erase();
-        } else {
-          u->erase(); // sem_dealloc
-        }
-      }
-      alloc.erase();
-    }
-  }
-
-  /// Annotate sem_alloc ops with assigned addresses.
   void annotateIR(const llvm::SmallVector<SemInterval> &intervals) {
     for (const auto &iv : intervals) {
       auto *op = iv.allocOp;
@@ -494,19 +370,16 @@ private:
 
       if (iv.reused) {
         op->setAttr("eaac.sem_reused", UnitAttr::get(ctx));
-        op->emitWarning("semaphore address reused due to register pressure — "
-                        "correctness depends on self-sequencing guarantee");
       }
     }
   }
 
   LogicalResult
   processFunction(func::FuncOp funcOp, int64_t numPairs,
-                  int64_t numGenerations,
-                  const StreamingChannelAnalysis &channelAnalysis) {
-    //elideRedundantChannelSemaphores(funcOp, channelAnalysis);
+                  int64_t numGenerations) {
+
     auto opNumbers = numberOperations(funcOp);
-    auto intervals = buildIntervals(funcOp, opNumbers, channelAnalysis);
+    auto intervals = buildIntervals(funcOp, opNumbers);
 
     if (intervals.empty())
       return success();

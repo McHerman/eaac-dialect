@@ -9,6 +9,7 @@
 
 include "mlir/IR/AttrTypeBase.td"
 include "eaac/EAAC.td"
+include "eaac/IR/EAACTypeInterfaces.td"
 
 def EAAC_SemaphoreType : TypeDef<EAAC_Dialect, "Semaphore"> {
   let mnemonic = "semaphore";
@@ -31,5 +32,51 @@ def EAAC_MemSpaceAttr : AttrDef<EAAC_Dialect, "MemSpace"> {
   let parameters = (ins "int64_t":$tier, "int64_t":$offset);
   let assemblyFormat = "`<` `tier` `=` $tier `,` `offset` `=` $offset `>`";
 }
+
+class EAAC_Funit_Type<string name, string typeMnemonic, list<Trait> traits = []>
+    : TypeDef<EAAC_Dialect, name, !listconcat(traits, [FunitTypeInterface])> {
+  let mnemonic = typeMnemonic;
+
+  let parameters = (ins "unsigned":$pipeline_depth, "unsigned":$queue_depth);
+  let assemblyFormat = "`<` $pipeline_depth $queue_depth `>`";
+
+  let genMnemonicAlias = 1;
+}
+
+def Load_Type : EAAC_Funit_Type<"Load", "load"> {
+  let summary = "Load unit";
+  let description = [{
+    EAAC load unit
+  }];
+}
+
+def Store_Type : EAAC_Funit_Type<"Store", "store"> {
+  let summary = "Store unit";
+  let description = [{
+    EAAC load unit
+  }];
+}
+
+
+def RISC_Type : EAAC_Funit_Type<"RISC", "risc"> {
+  let summary = "Store unit";
+  let description = [{
+    EAAC RISC-V unit
+  }];
+}
+
+def GEMM_Type : EAAC_Funit_Type<"GEMM", "gemm"> {
+  let summary = "GEMM unit computing matmuls";
+  let description = [{
+    Capable of computing linalg.matmul operations
+  }];
+}
+
+// Matches any type implementing FunitTypeInterface, so HardwareAllocOp
+// (and any future generic allocation op) doesn't need updating when a new
+// hardware unit type is added.
+def AnyFunitType : Type<
+    CPred<"::llvm::isa<::mlir::eaac::FunitTypeInterface>($_self)">,
+    "a hardware functional unit type">;
 
 #endif // EAAC_TYPES
